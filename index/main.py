@@ -110,12 +110,107 @@ def render_message(message: Message) -> str:
             if isinstance(part_text, str) and part_text:
                 parts_text.append(part_text)
         if parts_text:
-            text += "\n".join(parts_text)
+            text += "\n" + "\n".join(parts_text)
 
     return text
 
 
+def enrich_chunk_text(
+    chunk_text: str,           # оригинальный текст чанка (без метаданных)
+    chat: Chat,
+    messages_in_chunk: list[Message],  # сообщения, входящие в этот чанк
+    message_ranges: list[tuple[int, int, str]],  # (start, end, msg_id) в chunk_text
+    max_len: int,
+) -> list[tuple[str, list[str]]]:   # возвращает список (обогащённый_текст, [id_сообщений])
+    # Формируем строку метаданных
+    meta_lines = []
+    len_characters_meta_lines = 0
+
+    # Информация из чата
+    chat_info = f"[Chat: {chat.name} ({chat.type})]"
+    meta_lines.append(chat_info)
+    len_characters_meta_lines += len(chat_info)
+
+    members_emails = []
+    if chat.members:
+        member_names = [str(m.get("name") or m.get("id", "")) for m in chat.members[:5]]
+        members_emails = [str(m.get("email", "")) for m in chat.members[:5]]
+        members_info = f"[people: {', '.join(member_names)}]"
+        meta_lines.append(members_info)
+        len_characters_meta_lines += len(members_info)
+
+    # Информация из Message
+    all_mentions = set()
+    senders_emails = set()
+    for msg in messages_in_chunk:
+        if msg.mentions:
+            all_mentions.update(msg.mentions[:5])
+            senders_emails.add(msg.sender_id)
+
+    all_mentions.update(members_emails)
+    all_mentions.update(senders_emails)
+
+
+    # if all_mentions:
+    #     for i in all_mentions:
+
+
+    meta_lines.append(f"[emails: {', '.join(list(all_mentions)[:10])}]")
+    # if has_forward:
+    #     meta_lines.append("[Есть пересылка]")
+    # if has_quote:
+    #     meta_lines.append("[Есть цитата]")
+    
+    meta_str = "\n".join(meta_lines) + "\n"
+    total_len = len(meta_str) + len(chunk_text)
+
+    # Если влезает – возвращаем один чанк
+    if total_len <= max_len:
+        return [(meta_str + chunk_text, [msg_id for _, _, msg_id in message_ranges])]
+
+    # Иначе делим chunk_text на две части по границам сообщений
+    # Находим точку раздела – половину длины текста
+    split_point = len(chunk_text) // 2
+    # Корректируем split_point до ближайшей границы сообщения
+    best_split = split_point
+    for start, end, _ in message_ranges:
+        if start <= split_point <= end:
+            # Если точка раздела внутри сообщения, отдаём всё сообщение в первую часть
+            best_split = end
+            break
+        elif start > split_point:
+            best_split = start
+            break
+    else:
+        # Если не нашли, оставляем split_point как есть
+        best_split = split_point
+    
+    part1_text = chunk_text[:best_split]
+    part2_text = chunk_text[best_split:]
+    
+    # Распределяем message_ids по частям
+    part1_ids = []
+    part2_ids = []
+    for start, end, msg_id in message_ranges:
+        if start < best_split:
+            part1_ids.append(msg_id)
+        if end > best_split:
+            part2_ids.append(msg_id)
+        # Если сообщение ровно на границе (end == best_split), включаем его в первую часть
+        elif end == best_split:
+            part1_ids.append(msg_id)
+
+    # Формируем результат: две части с одними и теми же метаданными
+    result = []
+    if part1_text.strip():
+        result.append((meta_str + part1_text, part1_ids))
+    if part2_text.strip():
+        result.append((meta_str + part2_text, part2_ids))
+    return result
+
+
 def build_chunks(
+    chat: Chat,
     overlap_messages: list[Message],
     new_messages: list[Message],
 ) -> list[IndexAPIItem]:
@@ -171,21 +266,52 @@ def build_chunks(
             for message_start, message_end, message_id in new_message_ranges
             if message_end > start and message_start < start + len(chunk_body)
         ]
-        chunk_overlap = previous_chunk_text
-        chunk_text = chunk_overlap
-        if chunk_text and chunk_body:
-            chunk_text += "\n"
-        chunk_text += chunk_body
 
-        result.append(
-            IndexAPIItem(
-                page_content=chunk_text,
-                dense_content=chunk_text,
-                sparse_content=chunk_text,
-                message_ids=[message_id for _, _, message_id in chunk_body_ranges],
-            )
+        # Находим сообщения, которые полностью или частично входят в чанк
+        chunk_msg_ids = {msg_id for _, _, msg_id in chunk_body_ranges}
+        chunk_messages = [msg for msg in new_messages if msg.id in chunk_msg_ids]
+
+        # Добавляем перекрытие
+        chunk_overlap = previous_chunk_text
+        # full_chunk_text = chunk_overlap + ("\n" if chunk_overlap and chunk_body else "") + chunk_body        
+         # 1. Берём chunk_body.
+        # 2. Обогащаем его (может разбиться на несколько под-чанков).
+        # 3. К каждому под-чанку добавляем перекрытие (previous_chunk_text) в начало.
+        # 4. Обновляем previous_chunk_text для следующей итерации.
+        
+        # Вызов enrich_chunk_text для chunk_body (без перекрытия)
+        enriched_parts = enrich_chunk_text(
+            chunk_text=chunk_body,
+            chat=chat,
+            messages_in_chunk=chunk_messages,
+            message_ranges=chunk_body_ranges,
+            max_len=CHUNK_SIZE,
         )
-        previous_chunk_text = slice_tail(chunk_text, OVERLAP_SIZE)
+
+        # chunk_overlap = previous_chunk_text
+        # chunk_text = chunk_overlap
+        # if chunk_text and chunk_body:
+        #     chunk_text += "\n"
+        # chunk_text += chunk_body
+
+        # Для каждой обогащённой части создаём IndexAPIItem
+        for enriched_text, part_msg_ids in enriched_parts:
+            # Добавляем перекрытие спереди
+            if chunk_overlap:
+                final_text = chunk_overlap + "\n" + enriched_text
+            else:
+                final_text = enriched_text
+            
+            result.append(IndexAPIItem(
+                page_content=final_text,
+                dense_content=final_text,
+                sparse_content=final_text,
+                message_ids=part_msg_ids,
+            ))
+
+            # Обновляем previous_chunk_text для следующего чанка
+            # Берём последние OVERLAP_SIZE символов ИТОГОВОГО текста (final_text)
+            previous_chunk_text = slice_tail(final_text, OVERLAP_SIZE)
 
     return result
 
@@ -199,6 +325,7 @@ async def health() -> dict[str, str]:
 async def index(payload: IndexAPIRequest) -> IndexAPIResponse:
     return IndexAPIResponse(
         results=build_chunks(
+            payload.data.chat,
             payload.data.overlap_messages,
             payload.data.new_messages,
         )

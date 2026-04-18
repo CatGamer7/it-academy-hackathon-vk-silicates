@@ -185,9 +185,9 @@ app = FastAPI(title="Search Service", version="0.1.0", lifespan=lifespan)
 DENSE_PREFETCH_K = 50
 SPRASE_PREFETCH_K = 50
 RETRIEVE_K = 50
+API_ANSWER_LIMIT = 50
 RERANK_LIMIT = 200
 REFORMULATIONS_LIMIT = 5
-
 
 
 async def embed_dense(client: httpx.AsyncClient, text: str) -> list[float]:
@@ -384,15 +384,15 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     all_points = []
     all_points_set = set()
 
-    all_query_variants = [query]
+    all_query_variants = [query_text]
 
-    if payload.question.variants:
-        all_query_variants.extend(payload.question.variants)
+    if question.variants:
+        all_query_variants.extend(question.variants)
 
     for query in all_query_variants[:REFORMULATIONS_LIMIT]:
 
         # build_enhanced_query
-        enhanced_query = query
+        enhanced_query = build_enhanced_query(question, query)
 
         dense_vector = await embed_dense(client, enhanced_query)
         sparse_vector = await embed_sparse(enhanced_query)
@@ -400,32 +400,33 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
         base_points = await qdrant_search(qdrant, dense_vector, sparse_vector)
         
         for point in base_points:
-            point_id = extract_message_ids(point)
+            point_id = point.id
 
             if point_id not in all_points_set:
                 all_points_set.update(point_id)
                 all_points.append(point)
 
-    best_points = all_points[:200]
+    best_points = all_points[:RERANK_LIMIT]
 
-    if best_points is None:
+    if not best_points:
         return SearchAPIResponse(results=[])
-
-    points_list = list(best_points)
 
     # Применяем фильтр по датам
     if question.date_range:
-        points_list = filter_points_by_date_range(points_list, question.date_range)
-        logger.debug(f"After date filter: {len(points_list)} points")
+        best_points = filter_points_by_date_range(best_points, question.date_range)
+        logger.debug(f"After date filter: {len(best_points)} points")
 
-    if not points_list:
+    if not best_points:
         return SearchAPIResponse(results=[])
 
-    reranked_points = await rerank_points(client, enhanced_query, points_list)
+    enhanced_query = build_enhanced_query(question, query_text)
+    reranked_points = await rerank_points(client, enhanced_query, best_points)
 
     message_ids = []
     for point in reranked_points:
         message_ids += extract_message_ids(point)
+    
+    message_ids = message_ids[:API_ANSWER_LIMIT]
 
     return SearchAPIResponse(results=[SearchAPIItem(message_ids=message_ids)])
 

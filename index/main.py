@@ -111,7 +111,7 @@ def render_message(message: Message) -> str:
             if isinstance(part_text, str) and part_text:
                 parts_text.append(part_text)
         if parts_text:
-            text += "\n" + "\n".join(parts_text)
+            text += " " + " ".join(parts_text)
 
     return text
 
@@ -168,8 +168,8 @@ def enrich_chunk_text(
     #     meta_lines.append("[Есть пересылка]")
     # if has_quote:
     #     meta_lines.append("[Есть цитата]")
-
-    meta_str = " ".join(meta_lines) + "\n"
+    
+    meta_str = " ".join(meta_lines) + " "
     total_len = len(meta_str) + len(chunk_text)
 
     # Если влезает – возвращаем один чанк
@@ -238,7 +238,7 @@ def build_chunks(
                 continue
 
             if index > 0 and text_parts:
-                text_parts.append("\n")
+                text_parts.append(" ")
                 position += 1
 
             start = position
@@ -312,8 +312,9 @@ def build_chunks(
 
             # Добавляем перекрытие спереди
             if chunk_overlap:
-                final_text = chunk_overlap + "\n" + enriched_text
-                final_text_row = chunk_overlap + "\n" + row_text
+                final_text = chunk_overlap + " " + enriched_text
+                final_text_row = chunk_overlap + " " + row_text
+
             else:
                 final_text = enriched_text
                 final_text_row = row_text

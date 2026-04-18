@@ -188,6 +188,7 @@ RETRIEVE_K = 50
 API_ANSWER_LIMIT = 50
 RERANK_LIMIT = 200
 REFORMULATIONS_LIMIT = 5
+DENSE_EMBED_LIMIT = 32_000
 
 
 async def embed_dense(client: httpx.AsyncClient, text: str) -> list[float]:
@@ -371,6 +372,10 @@ def filter_points_by_date_range(points: list, date_range: Optional[DateRange]) -
     return filtered
 
 
+def combine_query(query_list: list[str]) -> str:
+    return " ".join(query_list)[:DENSE_EMBED_LIMIT]
+
+
 @app.post("/search", response_model=SearchAPIResponse)
 async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     question = payload.question
@@ -389,12 +394,15 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     if question.variants:
         all_query_variants.extend(question.variants)
 
+    combined_query = combine_query(all_query_variants)
+    combined_enhanced_query = build_enhanced_query(question, combined_query)[:DENSE_EMBED_LIMIT]
+    dense_vector = await embed_dense(client, combined_enhanced_query)
+
     for query in all_query_variants[:REFORMULATIONS_LIMIT]:
 
         # build_enhanced_query
         enhanced_query = build_enhanced_query(question, query)
 
-        dense_vector = await embed_dense(client, enhanced_query)
         sparse_vector = await embed_sparse(enhanced_query)
 
         base_points = await qdrant_search(qdrant, dense_vector, sparse_vector)

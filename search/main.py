@@ -397,7 +397,7 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     combined_query = combine_query(all_query_variants)
     combined_enhanced_query = build_enhanced_query(question, combined_query)[:DENSE_EMBED_LIMIT]
 
-    dense_vector = await embed_dense(client, combined_enhanced_query)
+    dense_vector = await embed_dense(client, combined_query)
     sparse_vector = await embed_sparse(combined_enhanced_query)
 
     best_points = await qdrant_search(qdrant, dense_vector, sparse_vector)

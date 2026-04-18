@@ -90,6 +90,7 @@ app = FastAPI(title="Index Service", version="0.1.0")
 
 CHUNK_SIZE = 512
 OVERLAP_SIZE = 256
+META_INFO_SIZE = 256
 SPARSE_MODEL_NAME = "Qdrant/bm25"
 FASTEMBED_CACHE_PATH = "/models/fastembed"
 
@@ -150,17 +151,24 @@ def enrich_chunk_text(
     all_mentions.update(members_emails)
     all_mentions.update(senders_emails)
 
+    mentions_line = "[emails: "
+    mentions_emails = []
+    len_characters_meta_lines += len(mentions_line)
+    if all_mentions:
+        for mention in all_mentions:
+            if len(mention) + len_characters_meta_lines > META_INFO_SIZE:
+                break
+            else:
+                mentions_emails.append(mention)
+                len_characters_meta_lines += len(mention)
 
-    # if all_mentions:
-    #     for i in all_mentions:
-
-
-    meta_lines.append(f"[emails: {', '.join(list(all_mentions)[:10])}]")
+    mention_info = f"[emails: {' '.join(mentions_emails)}]"
+    meta_lines.append(mention_info)
     # if has_forward:
     #     meta_lines.append("[Есть пересылка]")
     # if has_quote:
     #     meta_lines.append("[Есть цитата]")
-    
+
     meta_str = "\n".join(meta_lines) + "\n"
     total_len = len(meta_str) + len(chunk_text)
 

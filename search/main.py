@@ -171,10 +171,16 @@ app = FastAPI(title="Search Service", version="0.1.0", lifespan=lifespan)
 # Внутри шаблона dense и rerank берутся из внешних HTTP endpoint'ов,
 # которые предоставляет проверяющая система.
 # Текущий код ниже — минимальный пример search pipeline.
-DENSE_PREFETCH_K = 10
-SPRASE_PREFETCH_K = 30
-RETRIEVE_K = 20
-RERANK_LIMIT = 10
+DENSE_PREFETCH_K = 75
+SPRASE_PREFETCH_K = 150
+RETRIEVE_K = 50
+API_ANSWER_LIMIT = 50
+RERANK_LIMIT = 50
+REFORMULATIONS_LIMIT = 5
+DENSE_EMBED_LIMIT = 32_000
+RERANK_QUERY_LIMIT = 8_000
+SPARSE_LEHGTH = 512
+
 
 async def embed_dense(client: httpx.AsyncClient, text: str) -> list[float]:
     # Dense endpoint ожидает OpenAI-compatible body с input как списком строк.
@@ -211,6 +217,7 @@ async def qdrant_search(
     client: AsyncQdrantClient,
     dense_vector: list[float],
     sparse_vector: SparseVector,
+    asked_on: str
 ) -> Any | None:
     response = await client.query_points(
         collection_name=QDRANT_COLLECTION_NAME,
@@ -229,8 +236,20 @@ async def qdrant_search(
                 limit=SPRASE_PREFETCH_K,
             ),
         ],
-        query=models.FusionQuery(fusion=models.Fusion.RRF),
+        query=models.FusionQuery(
+            fusion=models.Fusion.RRF
+        ),
         limit=RETRIEVE_K,
+        filter=models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="metadata.end",
+                    range=models.Range(
+                        lt=asked_on,
+                    ),
+                ),
+            ]
+        ),
         with_payload=True,
     )
 
@@ -280,7 +299,7 @@ async def rerank_points(
     query: str,
     points: list[Any],
 ) -> list[Any]:
-    rerank_candidates = points[:10]
+    rerank_candidates = points[:RERANK_LIMIT]
     rerank_targets = [point.payload.get("page_content") for point in rerank_candidates]
     scores = await get_rerank_scores(client, query, rerank_targets)
 
@@ -302,9 +321,57 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def build_list_to_len(in_list: list[str] | None, max_len: int):
+    if not in_list:
+        return None
+
+    cur_len = 0
+    out_str = ""
+
+    for in_str in in_list:
+        if cur_len + len(in_str) > max_len:
+            return out_str
+        
+        out_str += in_str
+        cur_len += len(in_str)
+
+
+def get_sparse_query(question: Question):
+    "Query, people, links, emails"
+    
+    entities = question.entities
+
+    if not entities:
+        return f"{question.search_text} {question.asker}"[:SPARSE_LEHGTH]
+
+    main_str = f"{question.search_text} {question.asker}"[:SPARSE_LEHGTH // 4]
+
+    part_list = [main_str]
+    if entities.people:
+        people_str = build_list_to_len(entities.people, SPARSE_LEHGTH // 4)
+        part_list.append(people_str)
+
+    if entities.links:
+        links_str = build_list_to_len(entities.links, SPARSE_LEHGTH // 4)
+        part_list.append(links_str)
+
+    # Give the rest space to emails
+    string_so_far = " ". join(part_list)
+    length_left_over = SPARSE_LEHGTH - len(string_so_far)
+
+    if entities.emails:
+        emails_str = build_list_to_len(entities.emails, length_left_over - 1)
+        
+        return f"{string_so_far} {emails_str}"
+    
+    return string_so_far
+
+
 @app.post("/search", response_model=SearchAPIResponse)
 async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
-    query = payload.question.text.strip()
+
+    question = payload.question
+    query = question.search_text.strip()
     if not query:
         raise HTTPException(status_code=400, detail="question.text is required")
 
@@ -312,13 +379,18 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     qdrant: AsyncQdrantClient = app.state.qdrant
 
     dense_vector = await embed_dense(client, query)
-    sparse_vector = await embed_sparse(query)
-    best_points = await qdrant_search(qdrant, dense_vector, sparse_vector)
+
+    sparse_query = get_sparse_query(question)
+    logger.info(f"sparse query is: {sparse_query}")
+    sparse_vector = await embed_sparse(sparse_query)
+
+    best_points = await qdrant_search(qdrant, dense_vector, sparse_vector, question.asked_on)
 
     if best_points is None:
         return SearchAPIResponse(results=[])
 
-    best_points = await rerank_points(client, query, list(best_points))
+    best_points = list(best_points)[:RERANK_LIMIT]
+    best_points = await rerank_points(client, query)
 
     message_ids: list[str] = [] 
     for point in best_points:

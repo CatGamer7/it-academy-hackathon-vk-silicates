@@ -153,14 +153,14 @@ def enrich_chunk_text(
 
     mentions_line = "[emails: "
     mentions_emails = []
-    len_characters_meta_lines += len(mentions_line)
+    len_characters_meta_lines += len(mentions_line) + 1
     if all_mentions:
         for mention in all_mentions:
             if len(mention) + len_characters_meta_lines > META_INFO_SIZE:
                 break
             else:
                 mentions_emails.append(mention)
-                len_characters_meta_lines += len(mention)
+                len_characters_meta_lines += len(mention) + 1
 
     mention_info = f"[emails: {' '.join(mentions_emails)}]"
     meta_lines.append(mention_info)
@@ -169,7 +169,7 @@ def enrich_chunk_text(
     # if has_quote:
     #     meta_lines.append("[Есть цитата]")
 
-    meta_str = "\n".join(meta_lines) + "\n"
+    meta_str = " ".join(meta_lines) + "\n"
     total_len = len(meta_str) + len(chunk_text)
 
     # Если влезает – возвращаем один чанк

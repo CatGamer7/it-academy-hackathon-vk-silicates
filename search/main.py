@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Any
 
+import asyncio
 import httpx
 from fastembed import SparseTextEmbedding
 from fastapi import FastAPI, HTTPException, Request
@@ -175,7 +176,7 @@ DENSE_PREFETCH_K = 75
 SPRASE_PREFETCH_K = 150
 RETRIEVE_K = 50
 API_ANSWER_LIMIT = 50
-RERANK_LIMIT = 50
+RERANK_LIMIT = 20
 REFORMULATIONS_LIMIT = 5
 DENSE_EMBED_LIMIT = 32_000
 RERANK_QUERY_LIMIT = 8_000
@@ -184,21 +185,35 @@ SPARSE_LEHGTH = 512
 
 async def embed_dense(client: httpx.AsyncClient, text: str) -> list[float]:
     # Dense endpoint ожидает OpenAI-compatible body с input как списком строк.
-    response = await client.post(
-        EMBEDDINGS_DENSE_URL,
-        **get_upstream_request_kwargs(),
-        json={
-            "model": os.getenv("EMBEDDINGS_DENSE_MODEL", EMBEDDINGS_DENSE_MODEL),
-            "input": [text],
-        },
-    )
-    response.raise_for_status()
 
-    payload = DenseEmbeddingResponse.model_validate(response.json())
-    if not payload.data:
-        raise ValueError("Dense embedding response is empty")
+    while True:
 
-    return payload.data[0].embedding
+        try:
+            response = await client.post(
+                EMBEDDINGS_DENSE_URL,
+                **get_upstream_request_kwargs(),
+                json={
+                    "model": os.getenv("EMBEDDINGS_DENSE_MODEL", EMBEDDINGS_DENSE_MODEL),
+                    "input": [text],
+                },
+            )
+            response.raise_for_status()
+
+            payload = DenseEmbeddingResponse.model_validate(response.json())
+            if not payload.data:
+                raise ValueError("Dense embedding response is empty")
+
+            return payload.data[0].embedding
+
+        except httpx.HTTPStatusError as e:
+            
+            if e.response.status_code == 429:
+                print("Rate limited. Waiting 1 second before retrying...")
+                await asyncio.sleep(1)
+                continue
+
+            else:
+                raise
 
 
 async def embed_sparse(text: str) -> SparseVector:
@@ -217,8 +232,31 @@ async def qdrant_search(
     client: AsyncQdrantClient,
     dense_vector: list[float],
     sparse_vector: SparseVector,
-    asked_on: str
+    question: Question
 ) -> Any | None:
+    
+    # filter_list = []
+# 
+    # if question.date_range is not None:
+    #     date_filters = [
+    #         models.FieldCondition(
+    #             key="metadata.start",
+    #             range=models.Range(
+    #                 gt=question.date_range.from_,
+    #             ),
+    #         ),
+    #         models.FieldCondition(
+    #             key="metadata.end",
+    #             range=models.Range(
+    #                 lt=question.date_range.to,
+    #             ),
+    #         ),
+    #     ]
+# 
+    #     filter_list.extend(
+    #         date_filters
+    #     )
+
     response = await client.query_points(
         collection_name=QDRANT_COLLECTION_NAME,
         prefetch=[
@@ -241,15 +279,8 @@ async def qdrant_search(
         ),
         limit=RETRIEVE_K,
         # filter=models.Filter(
-        #     must=[
-        #         models.FieldCondition(
-        #             key="metadata.end",
-        #             range=models.Range(
-        #                 lt=asked_on,
-        #             ),
-        #         ),
-        #     ]
-        # ),
+        #     must=filter_list
+        # ) if filter_list else None,
         with_payload=True,
     )
 
@@ -272,26 +303,41 @@ async def get_rerank_scores(
     label: str,
     targets: list[str],
 ) -> list[float]:
-    if not targets:
-        return []
+    
+    while True:
 
-    # Rerank endpoint возвращает score для пары query -> candidate text.
-    response = await client.post(
-        RERANKER_URL,
-        **get_upstream_request_kwargs(),
-        json={
-            "model": RERANKER_MODEL,
-            "encoding_format": "float",
-            "text_1": label,
-            "text_2": targets,
-        },
-    )
-    response.raise_for_status()
+        try:
 
-    payload = response.json()
-    data = payload.get("data") or []
+            if not targets:
+                return []
 
-    return [float(sample["score"]) for sample in data]
+            # Rerank endpoint возвращает score для пары query -> candidate text.
+            response = await client.post(
+                RERANKER_URL,
+                **get_upstream_request_kwargs(),
+                json={
+                    "model": RERANKER_MODEL,
+                    "encoding_format": "float",
+                    "text_1": label,
+                    "text_2": targets,
+                },
+            )
+            response.raise_for_status()
+
+            payload = response.json()
+            data = payload.get("data") or []
+
+            return [float(sample["score"]) for sample in data]
+        
+        except httpx.HTTPStatusError as e:
+            
+            if e.response.status_code == 429:
+                print("Rate limited. Waiting 1 second before retrying...")
+                await asyncio.sleep(1)
+                continue
+
+            else:
+                raise
 
 
 async def rerank_points(
@@ -349,22 +395,18 @@ def get_sparse_query(query_base: str, question: Question):
     main_str = f"{query_base} {question.asker}"[:SPARSE_LEHGTH // 4]
 
     part_list = [main_str]
-    logger.info(f"ent: {question.entities.people}")
     if entities.people:
         people_str = build_list_to_len(entities.people, SPARSE_LEHGTH // 4)
         part_list.append(people_str)
 
-    logger.info(f"ent: {question.entities.links}")
     if entities.links:
         links_str = build_list_to_len(entities.links, SPARSE_LEHGTH // 4)
         part_list.append(links_str)
 
     # Give the rest space to emails
-    logger.info(f"parts: {part_list}")
     string_so_far = " ". join(part_list)
     length_left_over = SPARSE_LEHGTH - len(string_so_far)
 
-    logger.info(f"ent: {question.entities.emails}")
     if entities.emails:
         emails_str = build_list_to_len(entities.emails, length_left_over - 1)
 
@@ -387,7 +429,6 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     dense_vector = await embed_dense(client, query)
 
     sparse_query = get_sparse_query(query, question)
-    logger.info(f"sparse query is: {sparse_query}")
     sparse_vector = await embed_sparse(sparse_query)
 
     best_points = await qdrant_search(qdrant, dense_vector, sparse_vector, question.asked_on)
@@ -395,12 +436,17 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     if best_points is None:
         return SearchAPIResponse(results=[])
 
-    best_points = list(best_points)[:RERANK_LIMIT]
-    best_points = await rerank_points(client, query, best_points)
+    to_rerank = best_points[:RERANK_LIMIT]
+    
+    reranked = await rerank_points(client, query, to_rerank)
+
+    final_points = reranked + best_points[RERANK_LIMIT:]
 
     message_ids: list[str] = [] 
-    for point in best_points:
+    for point in final_points:
         message_ids += extract_message_ids(point)
+
+    message_ids = message_ids[:API_ANSWER_LIMIT]
 
     return SearchAPIResponse(
         results=[SearchAPIItem(message_ids=message_ids)]

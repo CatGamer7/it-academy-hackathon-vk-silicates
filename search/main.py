@@ -243,18 +243,6 @@ async def qdrant_search(
     Чтобы чекнуть идею, или же можно приравнять веса
     """
     # Фильтр по дате 
-    filter_conditions = []
-    if question.date_range is not None:
-        filter_conditions.extend([
-            models.FieldCondition(
-                key="metadata.start",
-                range=models.DatetimeRange(gt=question.date_range.from_),
-            ),
-            models.FieldCondition(
-                key="metadata.end",
-                range=models.DatetimeRange(lt=question.date_range.to),
-            ),
-        ])
     query_filter = None
 
     # Dense поиск
@@ -402,20 +390,26 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-def build_list_to_len(in_list: list[str] | None, max_len: int):
+def build_list_to_len(in_list: list[str] | None, max_len: int) -> str:
     if not in_list:
-        return None
-
-    cur_len = 0
+        return ""
+    
     out_str = ""
+    cur_len = 0
 
     for in_str in in_list:
-        if cur_len + len(in_str) > max_len:
-            return out_str
-        
-        out_str += in_str
-        cur_len += len(in_str)
 
+        if in_str is None:
+            continue
+
+        s = str(in_str)       
+           # ensure string
+        if cur_len + len(s) > max_len:
+            break
+
+        out_str += s
+        cur_len += len(s)
+        
     return out_str
 
 
@@ -452,11 +446,18 @@ def get_sparse_query(query_base: str, question: Question):
 
 def enrich_query_with_variants(query_base: str, question: Question) -> str:
     variants = question.variants or []
-    if question.variants:
-        variants.append(query_base)
-    else:
+
+    if not variants:
         return query_base
-    return build_list_to_len(variants, DENSE_EMBED_LIMIT - len(query_base) - 1)
+    
+    variants_copy = [v for v in variants if v is not None] + [query_base]
+
+    if not variants_copy:
+        return query_base
+    
+    result = build_list_to_len(variants_copy, DENSE_EMBED_LIMIT - len(query_base) - 1)
+
+    return result if result else query_base
 
 
 def extract_message_ids(point: Any) -> list[str]:

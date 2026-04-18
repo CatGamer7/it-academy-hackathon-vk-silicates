@@ -385,15 +385,15 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     all_points_set = set()
 
     all_query_variants = [query_text]
-
+    all_enhanced_queries = []
     if question.variants:
         all_query_variants.extend(question.variants)
-
+    
     for query in all_query_variants[:REFORMULATIONS_LIMIT]:
 
         # build_enhanced_query
         enhanced_query = build_enhanced_query(question, query)
-
+        all_enhanced_queries.append(enhanced_query)
         dense_vector = await embed_dense(client, enhanced_query)
         sparse_vector = await embed_sparse(enhanced_query)
 
@@ -420,13 +420,14 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     if not best_points:
         return SearchAPIResponse(results=[])
 
-    enhanced_query = build_enhanced_query(question, query_text)
-    reranked_points = await rerank_points(client, enhanced_query, best_points)
+    reranking_query = " ".join(all_enhanced_queries)[:8000]
+    print(f"Len of RQ = {len(reranking_query)}\n {reranking_query}")
+    reranked_points = await rerank_points(client, reranking_query, best_points)
 
     message_ids = []
     for point in reranked_points:
         message_ids += extract_message_ids(point)
-    
+
     message_ids = message_ids[:API_ANSWER_LIMIT]
 
     return SearchAPIResponse(results=[SearchAPIItem(message_ids=message_ids)])

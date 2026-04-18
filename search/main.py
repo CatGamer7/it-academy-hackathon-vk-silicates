@@ -298,9 +298,6 @@ async def qdrant_search(
             fusion=models.Fusion.RRF
         ),
         limit=RETRIEVE_K,
-        query_filter=models.Filter(
-            must=filter_list
-        ) if filter_list else None,
         with_payload=True,
     )
 

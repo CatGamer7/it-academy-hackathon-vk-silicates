@@ -404,7 +404,7 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
             point_id = point.id
 
             if point_id not in all_points_set:
-                all_points_set.update(point_id)
+                all_points_set.add(point_id)
                 all_points.append(point)
 
     best_points = all_points[:RERANK_LIMIT]

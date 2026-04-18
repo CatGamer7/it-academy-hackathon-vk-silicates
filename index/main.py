@@ -110,7 +110,7 @@ def render_message(message: Message) -> str:
             if isinstance(part_text, str) and part_text:
                 parts_text.append(part_text)
         if parts_text:
-            text += " " + "\n".join(parts_text)
+            text += " " + " ".join(parts_text)
 
     return text
 
@@ -143,7 +143,7 @@ def build_sparse_metadata(
                 else:
                     break
         if names:
-            people_str = f"[people: {', '.join(names)}]"
+            people_str = f"[people: {' '.join(names)}]"
             # Если не влезает целиком, то не добавляем
             if current_len + len(people_str) <= max_meta_len:
                 meta_parts.append(people_str)
@@ -224,7 +224,7 @@ def build_chunks(
                 continue
 
             if index > 0 and text_parts:
-                text_parts.append("\n")
+                text_parts.append(" ")
                 position += 1
 
             start = position
@@ -232,7 +232,7 @@ def build_chunks(
             position += len(text)
             message_ranges.append((start, position, message.id))
 
-        return "".join(text_parts), message_ranges
+        return " ".join(text_parts), message_ranges
 
     def slice_tail(
         text: str,
@@ -266,7 +266,7 @@ def build_chunks(
         chunk_overlap = previous_chunk_text
         chunk_text = chunk_overlap
         if chunk_text and chunk_body:
-            chunk_text += "\n"
+            chunk_text += " "
         chunk_text += chunk_body
 
         # Находим сообщения, которые полностью или частично входят в чанк
@@ -275,12 +275,20 @@ def build_chunks(
         sparse_chunk_text_meta = build_sparse_metadata(chat, chunk_messages, CHUNK_SIZE + OVERLAP_SIZE)
         if chunk_body:
             left_len = CHUNK_SIZE + OVERLAP_SIZE - len(sparse_chunk_text_meta)
-            sparse_chunk_text_meta += chunk_body[:left_len]
+            sparse_chunk_text_meta += " " + chunk_body[:left_len-1]
+        
+        
+        # Название и тип чата
+        chat_info = f"[chat: {chat.name}]"
+        current_len += len(chat_info) + 1  # +1 для пробела
+        dense_text = chunk_overlap[len(chat_info):]
+        dense_text += " " + chat_info
+        dense_text += chunk_body
 
         result.append(
             IndexAPIItem(
                 page_content=chunk_text,
-                dense_content=chunk_text,
+                dense_content=dense_text,
                 sparse_content=sparse_chunk_text_meta,
                 message_ids=[message_id for _, _, message_id in chunk_body_ranges],
             )

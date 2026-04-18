@@ -130,6 +130,7 @@ class SparseVector(BaseModel):
 class SparseEmbeddingResponse(BaseModel):
     vectors: list[SparseVector]
 
+
 # Метадата чанков в Qdrant'e, по которой вы можете фильтровать
 class ChunkMetadata(BaseModel):
     chat_name: str
@@ -145,6 +146,7 @@ class ChunkMetadata(BaseModel):
     contains_forward: bool = False
     contains_quote: bool = False
 
+
 class IndexAPIItem(BaseModel):
     page_content: str
     dense_content: str
@@ -152,7 +154,7 @@ class IndexAPIItem(BaseModel):
     message_ids: list[str]
     keywords: list[str] = []
     entities: dict[str, list[str]] = {}
-    
+
 
 @lru_cache(maxsize=1)
 def get_sparse_model() -> SparseTextEmbedding:
@@ -184,6 +186,7 @@ DENSE_PREFETCH_K = 10
 SPRASE_PREFETCH_K = 30
 RETRIEVE_K = 20
 RERANK_LIMIT = 10
+
 
 async def embed_dense(client: httpx.AsyncClient, text: str) -> list[float]:
     # Dense endpoint ожидает OpenAI-compatible body с input как списком строк.
@@ -312,12 +315,23 @@ async def health() -> dict[str, str]:
 
 
 # Добавляем метаданные
-def build_enhanced_query(question: Question) -> str:
-    parts = [question.text]
+def build_enhanced_query(question: Question, query: str) -> str:
+    parts = [query]
     if question.keywords:
         parts.append("keywords: " + " ".join(question.keywords))
-    if question.entities and question.entities.people:
-        parts.append("people: " + " ".join(question.entities.people))
+    if question.date_mentions:
+        parts.append("date mentioned: " + " ".join(question.date_mentions))
+    if question.entities:
+        if question.entities.people:
+            parts.append("people: " + " ".join(question.entities.people))
+        if question.entities.emails:
+            parts.append("emails: " + " ".join(question.entities.emails))
+        if question.entities.documents:
+            parts.append("documents: " + " ".join(question.entities.documents))
+        if question.entities.names:
+            parts.append("names: " + " ".join(question.entities.names))
+        if question.entities.links:
+            parts.append("links: " + " ".join(question.entities.links))
     return " ".join(parts)
 
 
@@ -362,8 +376,7 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     if not query_text:
         raise HTTPException(status_code=400, detail="question.text is required")
 
-    enhanced_query = build_enhanced_query(question)  # используем ранее определённую функцию
-    logger.debug(f"Enhanced query: {enhanced_query}")
+    enhanced_query = build_enhanced_query(question, query_text)  # используем ранее определённую функцию
 
     client = app.state.http
     qdrant = app.state.qdrant
@@ -385,7 +398,7 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     if not points_list:
         return SearchAPIResponse(results=[])
 
-    reranked_points = await rerank_points(client, query_text, points_list)
+    reranked_points = await rerank_points(client, enhanced_query, points_list)
 
     message_ids = []
     for point in reranked_points:
@@ -406,7 +419,6 @@ async def exception_handler(request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     return JSONResponse(status_code=500, content={"detail": detail})
-
 
 
 def main() -> None:

@@ -189,6 +189,7 @@ API_ANSWER_LIMIT = 50
 RERANK_LIMIT = 50
 REFORMULATIONS_LIMIT = 5
 DENSE_EMBED_LIMIT = 32_000
+RERANK_QUERY_LIMIT = 8_000
 
 
 async def embed_dense(client: httpx.AsyncClient, text: str) -> list[float]:
@@ -411,8 +412,7 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
         return SearchAPIResponse(results=[])
 
     best_points = best_points[:RERANK_LIMIT]
-    enhanced_query = build_enhanced_query(question, query_text)
-    reranked_points = await rerank_points(client, enhanced_query, best_points)
+    reranked_points = await rerank_points(client, combined_query[:RERANK_QUERY_LIMIT], best_points)
 
     message_ids = []
     for point in reranked_points:

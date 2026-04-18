@@ -240,16 +240,16 @@ async def qdrant_search(
             fusion=models.Fusion.RRF
         ),
         limit=RETRIEVE_K,
-        filter=models.Filter(
-            must=[
-                models.FieldCondition(
-                    key="metadata.end",
-                    range=models.Range(
-                        lt=asked_on,
-                    ),
-                ),
-            ]
-        ),
+        # filter=models.Filter(
+        #     must=[
+        #         models.FieldCondition(
+        #             key="metadata.end",
+        #             range=models.Range(
+        #                 lt=asked_on,
+        #             ),
+        #         ),
+        #     ]
+        # ),
         with_payload=True,
     )
 
@@ -335,33 +335,39 @@ def build_list_to_len(in_list: list[str] | None, max_len: int):
         out_str += in_str
         cur_len += len(in_str)
 
+    return out_str
 
-def get_sparse_query(question: Question):
+
+def get_sparse_query(query_base: str, question: Question):
     "Query, people, links, emails"
     
     entities = question.entities
 
     if not entities:
-        return f"{question.search_text} {question.asker}"[:SPARSE_LEHGTH]
+        return f"{query_base} {question.asker}"[:SPARSE_LEHGTH]
 
-    main_str = f"{question.search_text} {question.asker}"[:SPARSE_LEHGTH // 4]
+    main_str = f"{query_base} {question.asker}"[:SPARSE_LEHGTH // 4]
 
     part_list = [main_str]
+    logger.info(f"ent: {question.entities.people}")
     if entities.people:
         people_str = build_list_to_len(entities.people, SPARSE_LEHGTH // 4)
         part_list.append(people_str)
 
+    logger.info(f"ent: {question.entities.links}")
     if entities.links:
         links_str = build_list_to_len(entities.links, SPARSE_LEHGTH // 4)
         part_list.append(links_str)
 
     # Give the rest space to emails
+    logger.info(f"parts: {part_list}")
     string_so_far = " ". join(part_list)
     length_left_over = SPARSE_LEHGTH - len(string_so_far)
 
+    logger.info(f"ent: {question.entities.emails}")
     if entities.emails:
         emails_str = build_list_to_len(entities.emails, length_left_over - 1)
-        
+
         return f"{string_so_far} {emails_str}"
     
     return string_so_far
@@ -371,7 +377,7 @@ def get_sparse_query(question: Question):
 async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
 
     question = payload.question
-    query = question.search_text.strip()
+    query = question.search_text.strip() or question.text
     if not query:
         raise HTTPException(status_code=400, detail="question.text is required")
 
@@ -380,7 +386,7 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
 
     dense_vector = await embed_dense(client, query)
 
-    sparse_query = get_sparse_query(question)
+    sparse_query = get_sparse_query(query, question)
     logger.info(f"sparse query is: {sparse_query}")
     sparse_vector = await embed_sparse(sparse_query)
 
@@ -390,7 +396,7 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
         return SearchAPIResponse(results=[])
 
     best_points = list(best_points)[:RERANK_LIMIT]
-    best_points = await rerank_points(client, query)
+    best_points = await rerank_points(client, query, best_points)
 
     message_ids: list[str] = [] 
     for point in best_points:

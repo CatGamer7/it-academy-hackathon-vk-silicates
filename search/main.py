@@ -1,3 +1,4 @@
+from datetime import datetime
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -180,7 +181,7 @@ RERANK_LIMIT = 20
 REFORMULATIONS_LIMIT = 5
 DENSE_EMBED_LIMIT = 32_000
 RERANK_QUERY_LIMIT = 8_000
-SPARSE_LEHGTH = 512
+SPARSE_LEHGTH = 1000
 
 
 async def embed_dense(client: httpx.AsyncClient, text: str) -> list[float]:
@@ -235,27 +236,30 @@ async def qdrant_search(
     question: Question
 ) -> Any | None:
     
-    # filter_list = []
-# 
-    # if question.date_range is not None:
-    #     date_filters = [
-    #         models.FieldCondition(
-    #             key="metadata.start",
-    #             range=models.Range(
-    #                 gt=question.date_range.from_,
-    #             ),
-    #         ),
-    #         models.FieldCondition(
-    #             key="metadata.end",
-    #             range=models.Range(
-    #                 lt=question.date_range.to,
-    #             ),
-    #         ),
-    #     ]
-# 
-    #     filter_list.extend(
-    #         date_filters
-    #     )
+    filter_list = []
+
+    if question.date_range is not None:
+
+        date_filters = [
+            models.FieldCondition(
+                key="metadata.start",
+                range=models.DatetimeRange(
+                    gt=question.date_range.from_,
+                ),
+            ),
+            models.FieldCondition(
+                key="metadata.end",
+                range=models.DatetimeRange(
+                    lt=question.date_range.to,
+                ),
+            ),
+        ]
+
+        filter_list.extend(
+            date_filters
+        )
+
+    logger.info(f"list: {filter_list}")
 
     response = await client.query_points(
         collection_name=QDRANT_COLLECTION_NAME,
@@ -278,9 +282,9 @@ async def qdrant_search(
             fusion=models.Fusion.RRF
         ),
         limit=RETRIEVE_K,
-        # filter=models.Filter(
-        #     must=filter_list
-        # ) if filter_list else None,
+        query_filter=models.Filter(
+            must=filter_list
+        ) if filter_list else None,
         with_payload=True,
     )
 
@@ -431,7 +435,7 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     sparse_query = get_sparse_query(query, question)
     sparse_vector = await embed_sparse(sparse_query)
 
-    best_points = await qdrant_search(qdrant, dense_vector, sparse_vector, question.asked_on)
+    best_points = await qdrant_search(qdrant, dense_vector, sparse_vector, question)
 
     if best_points is None:
         return SearchAPIResponse(results=[])

@@ -174,7 +174,7 @@ app = FastAPI(title="Search Service", version="0.1.0", lifespan=lifespan)
 # которые предоставляет проверяющая система.
 # Текущий код ниже — минимальный пример search pipeline.
 DENSE_PREFETCH_K = 75
-SPRASE_PREFETCH_K = 150
+SPARSE_PREFETCH_K = 150
 RETRIEVE_K = 50
 API_ANSWER_LIMIT = 50
 RERANK_LIMIT = 20
@@ -182,7 +182,8 @@ REFORMULATIONS_LIMIT = 5
 DENSE_EMBED_LIMIT = 32_000
 RERANK_QUERY_LIMIT = 8_000
 SPARSE_LEHGTH = 1000
-
+DENSE_WEIGHT = 0.7
+SPARSE_WEIGHT = 0.3
 
 async def embed_dense(client: httpx.AsyncClient, text: str) -> list[float]:
     # Dense endpoint ожидает OpenAI-compatible body с input как списком строк.
@@ -234,72 +235,99 @@ async def qdrant_search(
     dense_vector: list[float],
     sparse_vector: SparseVector,
     question: Question
-) -> Any | None:
-    
-    filter_list = []
-
+) -> list[Any] | None:
+    """
+    Попытка использовать z нормализацию
+    с разными весами для dense и sparse частей
+    С весами можно поэкспериментировать
+    Чтобы чекнуть идею, или же можно приравнять веса
+    """
+    # Фильтр по дате 
+    filter_conditions = []
     if question.date_range is not None:
-
-        date_filters = [
+        filter_conditions.extend([
             models.FieldCondition(
                 key="metadata.start",
-                range=models.DatetimeRange(
-                    gt=question.date_range.from_,
-                ),
+                range=models.DatetimeRange(gt=question.date_range.from_),
             ),
             models.FieldCondition(
                 key="metadata.end",
-                range=models.DatetimeRange(
-                    lt=question.date_range.to,
-                ),
+                range=models.DatetimeRange(lt=question.date_range.to),
             ),
-        ]
+        ])
+    query_filter = models.Filter(must=filter_conditions) if filter_conditions else None
 
-        filter_list.extend(
-            date_filters
-        )
-
-    logger.info(f"list: {filter_list}")
-
-    response = await client.query_points(
+    # Dense поиск
+    dense_response = await client.query_points(
         collection_name=QDRANT_COLLECTION_NAME,
-        prefetch=[
-            models.Prefetch(
-                query=dense_vector,
-                using=QDRANT_DENSE_VECTOR_NAME,
-                limit=DENSE_PREFETCH_K,
-            ),
-            models.Prefetch(
-                query=models.SparseVector(
-                    indices=sparse_vector.indices,
-                    values=sparse_vector.values,
-                ),
-                using=QDRANT_SPARSE_VECTOR_NAME,
-                limit=SPRASE_PREFETCH_K,
-            ),
-        ],
-        query=models.FusionQuery(
-            fusion=models.Fusion.RRF
-        ),
-        limit=RETRIEVE_K,
-        query_filter=models.Filter(
-            must=filter_list
-        ) if filter_list else None,
+        query=dense_vector,
+        using=QDRANT_DENSE_VECTOR_NAME,
+        limit=DENSE_PREFETCH_K,
+        query_filter=query_filter,
         with_payload=True,
+        with_vectors=False,
     )
+    dense_points = dense_response.points or []
 
-    if not response.points:
+    # Sparse поиск
+    sparse_response = await client.query_points(
+        collection_name=QDRANT_COLLECTION_NAME,
+        query=models.SparseVector(
+            indices=sparse_vector.indices,
+            values=sparse_vector.values,
+        ),
+        using=QDRANT_SPARSE_VECTOR_NAME,
+        limit=SPARSE_PREFETCH_K,
+        query_filter=query_filter,
+        with_payload=True,
+        with_vectors=False,
+    )
+    sparse_points = sparse_response.points or []
+
+    if not dense_points and not sparse_points:
         return None
 
-    return response.points
+    # Сбор сырых scores
+    dense_scores_map = {p.id: (p, p.score) for p in dense_points}
+    sparse_scores_map = {p.id: (p, p.score) for p in sparse_points}
+
+    #  Нормализация отдельно для каждого списка
+    dense_scores = [p.score for p in dense_points]
+    norm_dense = z_score_normalize(dense_scores)
+    for (pid, (p, _)), norm_score in zip(dense_scores_map.items(), norm_dense):
+        dense_scores_map[pid] = (p, norm_score)
+
+    sparse_scores = [p.score for p in sparse_points]
+    norm_sparse = z_score_normalize(sparse_scores)
+    for (pid, (p, _)), norm_score in zip(sparse_scores_map.items(), norm_sparse):
+        sparse_scores_map[pid] = (p, norm_score)
+
+    # Взвешенное объединение
+    combined = {}  # id -> (point, final_score)
+    for pid, (p, norm_d) in dense_scores_map.items():
+        score = DENSE_WEIGHT * norm_d
+        if pid in sparse_scores_map:
+            score += SPARSE_WEIGHT * sparse_scores_map[pid][1]
+        combined[pid] = (p, score)
+
+    for pid, (p, norm_s) in sparse_scores_map.items():
+        if pid not in combined:
+            combined[pid] = (p, SPARSE_WEIGHT * norm_s)
+
+    # Сортировка и возврат по старому интерфейсу
+    sorted_points = sorted(combined.values(), key=lambda x: x[1], reverse=True)
+    return [point for point, _ in sorted_points[:RETRIEVE_K]]
 
 
-def extract_message_ids(point: Any) -> list[str]:
-    payload = point.payload or {}
-    metadata = payload.get("metadata") or {}
-    message_ids = metadata.get("message_ids") or []
-
-    return [str(message_id) for message_id in message_ids]
+def extract_message_ids(points: Any) -> list[str]:
+    seen = set()
+    unique_ids = []
+    for point in points:
+        for msg_id in extract_message_ids(point):
+            if msg_id not in seen:
+                seen.add(msg_id)
+                unique_ids.append(msg_id)
+    return unique_ids[:API_ANSWER_LIMIT]
 
 
 async def get_rerank_scores(
@@ -343,6 +371,19 @@ async def get_rerank_scores(
             else:
                 raise
 
+def z_score_normalize(scores: list[float]) -> list[float]:
+    """
+    Using z-score normalization to scale the scores.
+    This can help to lower the impact of outliers
+    """
+    if not scores:
+        return []
+    mean = sum(scores) / len(scores)
+    variance = sum((x - mean) ** 2 for x in scores) / len(scores)
+    std = variance ** 0.5
+    if std == 0:
+        return scores
+    return [(x - mean) / std for x in scores]
 
 async def rerank_points(
     client: httpx.AsyncClient,
@@ -415,21 +456,19 @@ def get_sparse_query(query_base: str, question: Question):
         emails_str = build_list_to_len(entities.emails, length_left_over - 1)
 
         return f"{string_so_far} {emails_str}"
-    
+
     return string_so_far
+
 
 def enrich_query_with_variants(query_base: str, question: Question) -> str:
     variants = question.variants or []
-    hyde = question.hyde or []
-
-    all_variants = variants + hyde
-    if not all_variants:
+    if question.variants:
+        variants.append(query_base)
+    else:
         return query_base
+    return build_list_to_len(variants, DENSE_EMBED_LIMIT - len(query_base) - 1)
 
-    variants_str = " ".join(all_variants)
-    enriched_query = f"{query_base} {variants_str}"
 
-    return enriched_query[:RERANK_QUERY_LIMIT]
 
 @app.post("/search", response_model=SearchAPIResponse)
 async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
@@ -443,7 +482,7 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     qdrant: AsyncQdrantClient = app.state.qdrant
     
     dense_vector = await embed_dense(
-        client, 
+        client,
         enrich_query_with_variants(query, question)
     )
 

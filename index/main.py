@@ -288,7 +288,6 @@ def build_chunks(
         
         # Название и тип чата
         chat_info = f"[chat: {chat.name}]"
-        current_len += len(chat_info) + 1  # +1 для пробела
         dense_text = chunk_overlap[len(chat_info):]
         dense_text += " " + chat_info
         dense_text += chunk_body

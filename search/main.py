@@ -240,16 +240,16 @@ async def qdrant_search(
             fusion=models.Fusion.RRF
         ),
         limit=RETRIEVE_K,
-        # filter=models.Filter(
-        #     must=[
-        #         models.FieldCondition(
-        #             key="metadata.start",
-        #             range=models.Range(
-        #                 lt=asked_on,
-        #             ),
-        #         ),
-        #     ]
-        # ),
+        filter=models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="metadata.end",
+                    range=models.Range(
+                        lt=asked_on,
+                    ),
+                ),
+            ]
+        ),
         with_payload=True,
     )
 
@@ -321,7 +321,10 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-def build_list_to_len(in_list: list[str], max_len: int):
+def build_list_to_len(in_list: list[str] | None, max_len: int):
+    if not in_list:
+        return None
+
     cur_len = 0
     out_str = ""
 
@@ -334,6 +337,7 @@ def build_list_to_len(in_list: list[str], max_len: int):
 
 
 def get_sparse_query(question: Question):
+    "Query, people, links, emails"
     
     entities = question.entities
 
@@ -342,19 +346,25 @@ def get_sparse_query(question: Question):
 
     main_str = f"{question.search_text} {question.asker}"[:SPARSE_LEHGTH // 4]
 
-    people_str = build_list_to_len(entities.people, SPARSE_LEHGTH // 4)
-    links_str = build_list_to_len(entities.links, SPARSE_LEHGTH // 4)
+    part_list = [main_str]
+    if entities.people:
+        people_str = build_list_to_len(entities.people, SPARSE_LEHGTH // 4)
+        part_list.append(people_str)
+
+    if entities.links:
+        links_str = build_list_to_len(entities.links, SPARSE_LEHGTH // 4)
+        part_list.append(links_str)
 
     # Give the rest space to emails
-    string_so_far = " ". join([
-        main_str, people_str, links_str
-    ])
+    string_so_far = " ". join(part_list)
     length_left_over = SPARSE_LEHGTH - len(string_so_far)
 
-    emails_str = build_list_to_len(entities.emails, length_left_over - 1)
-
-    # Query, people, links, emails
-    return f"{string_so_far} {emails_str}"
+    if entities.emails:
+        emails_str = build_list_to_len(entities.emails, length_left_over - 1)
+        
+        return f"{string_so_far} {emails_str}"
+    
+    return string_so_far
 
 
 @app.post("/search", response_model=SearchAPIResponse)

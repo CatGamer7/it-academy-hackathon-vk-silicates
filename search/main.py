@@ -255,7 +255,7 @@ async def qdrant_search(
                 range=models.DatetimeRange(lt=question.date_range.to),
             ),
         ])
-    query_filter = models.Filter(must=filter_conditions) if filter_conditions else None
+    query_filter = None
 
     # Dense поиск
     dense_response = await client.query_points(
@@ -318,16 +318,6 @@ async def qdrant_search(
     sorted_points = sorted(combined.values(), key=lambda x: x[1], reverse=True)
     return [point for point, _ in sorted_points[:RETRIEVE_K]]
 
-
-def extract_message_ids(points: Any) -> list[str]:
-    seen = set()
-    unique_ids = []
-    for point in points:
-        for msg_id in extract_message_ids(point):
-            if msg_id not in seen:
-                seen.add(msg_id)
-                unique_ids.append(msg_id)
-    return unique_ids[:API_ANSWER_LIMIT]
 
 
 async def get_rerank_scores(
@@ -469,6 +459,13 @@ def enrich_query_with_variants(query_base: str, question: Question) -> str:
     return build_list_to_len(variants, DENSE_EMBED_LIMIT - len(query_base) - 1)
 
 
+def extract_message_ids(point: Any) -> list[str]:
+    payload = point.payload or {}
+    metadata = payload.get("metadata") or {}
+    message_ids = metadata.get("message_ids") or []
+
+    return [str(message_id) for message_id in message_ids]
+
 
 @app.post("/search", response_model=SearchAPIResponse)
 async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
@@ -500,11 +497,22 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
 
     final_points = reranked + best_points[RERANK_LIMIT:]
 
-    message_ids: list[str] = [] 
-    for point in final_points:
-        message_ids += extract_message_ids(point)
+    seen_message_ids = set()
+    message_ids: list[str] = []
 
-    message_ids = message_ids[:API_ANSWER_LIMIT]
+    for point in final_points:
+
+        for msg_id in extract_message_ids(point):
+
+            if msg_id not in seen_message_ids:
+                seen_message_ids.add(msg_id)
+                message_ids.append(msg_id)
+
+                if len(message_ids) >= API_ANSWER_LIMIT:
+                    break
+
+        if len(message_ids) >= API_ANSWER_LIMIT:
+            break
 
     return SearchAPIResponse(
         results=[SearchAPIItem(message_ids=message_ids)]

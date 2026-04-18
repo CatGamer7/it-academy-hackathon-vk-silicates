@@ -2,7 +2,8 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from functools import lru_cache
-from typing import Any
+from typing import Any, Optional
+from datetime import datetime
 
 import httpx
 from fastembed import SparseTextEmbedding
@@ -34,7 +35,7 @@ REQUIRED_ENV_VARS = [
     "RERANKER_URL",
     "QDRANT_URL",
 ]
- 
+
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("search-service")
 
@@ -144,6 +145,14 @@ class ChunkMetadata(BaseModel):
     contains_forward: bool = False
     contains_quote: bool = False
 
+class IndexAPIItem(BaseModel):
+    page_content: str
+    dense_content: str
+    sparse_content: str
+    message_ids: list[str]
+    keywords: list[str] = []
+    entities: dict[str, list[str]] = {}
+    
 
 @lru_cache(maxsize=1)
 def get_sparse_model() -> SparseTextEmbedding:
@@ -302,31 +311,87 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+# Добавляем метаданные
+def build_enhanced_query(question: Question) -> str:
+    parts = [question.text]
+    if question.keywords:
+        parts.append("keywords: " + " ".join(question.keywords))
+    if question.entities and question.entities.people:
+        parts.append("people: " + " ".join(question.entities.people))
+    return " ".join(parts)
+
+
+# Фильтрация по датам
+def parse_iso_date(date_str: str) -> datetime:
+    if date_str.endswith('Z'):
+        date_str = date_str[:-1] + '+00:00'
+    return datetime.fromisoformat(date_str)
+
+
+def intervals_overlap(chunk_start: Optional[str], chunk_end: Optional[str], req_from: str, req_to: str) -> bool:
+    if not chunk_start or not chunk_end:
+        return False
+    try:
+        start = parse_iso_date(chunk_start)
+        end = parse_iso_date(chunk_end)
+        req_start = parse_iso_date(req_from)
+        req_end = parse_iso_date(req_to)
+        return start <= req_end and end >= req_start
+    except Exception:
+        return False
+
+
+def filter_points_by_date_range(points: list, date_range: Optional[DateRange]) -> list:
+    if not date_range:
+        return points
+    filtered = []
+    for point in points:
+        payload = point.payload or {}
+        metadata = payload.get("metadata") or {}
+        chunk_start = metadata.get("start")
+        chunk_end = metadata.get("end")
+        if intervals_overlap(chunk_start, chunk_end, date_range.from_, date_range.to):
+            filtered.append(point)
+    return filtered
+
+
 @app.post("/search", response_model=SearchAPIResponse)
 async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
-    query = payload.question.text.strip()
-    if not query:
+    question = payload.question
+    query_text = question.text.strip()
+    if not query_text:
         raise HTTPException(status_code=400, detail="question.text is required")
 
-    client: httpx.AsyncClient = app.state.http
-    qdrant: AsyncQdrantClient = app.state.qdrant
+    enhanced_query = build_enhanced_query(question)  # используем ранее определённую функцию
+    logger.debug(f"Enhanced query: {enhanced_query}")
 
-    dense_vector = await embed_dense(client, query)
-    sparse_vector = await embed_sparse(query)
+    client = app.state.http
+    qdrant = app.state.qdrant
+
+    dense_vector = await embed_dense(client, enhanced_query)
+    sparse_vector = await embed_sparse(enhanced_query)
+
     best_points = await qdrant_search(qdrant, dense_vector, sparse_vector)
-
     if best_points is None:
         return SearchAPIResponse(results=[])
 
-    best_points = await rerank_points(client, query, list(best_points))
+    points_list = list(best_points)
 
-    message_ids: list[str] = [] 
-    for point in best_points:
+    # Применяем фильтр по датам
+    if question.date_range:
+        points_list = filter_points_by_date_range(points_list, question.date_range)
+        logger.debug(f"After date filter: {len(points_list)} points")
+
+    if not points_list:
+        return SearchAPIResponse(results=[])
+
+    reranked_points = await rerank_points(client, query_text, points_list)
+
+    message_ids = []
+    for point in reranked_points:
         message_ids += extract_message_ids(point)
 
-    return SearchAPIResponse(
-        results=[SearchAPIItem(message_ids=message_ids)]
-    )
+    return SearchAPIResponse(results=[SearchAPIItem(message_ids=message_ids)])
 
 
 @app.exception_handler(Exception)
@@ -341,6 +406,7 @@ async def exception_handler(request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     return JSONResponse(status_code=500, content={"detail": detail})
+
 
 
 def main() -> None:

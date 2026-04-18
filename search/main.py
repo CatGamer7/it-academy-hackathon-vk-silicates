@@ -171,10 +171,12 @@ app = FastAPI(title="Search Service", version="0.1.0", lifespan=lifespan)
 # Внутри шаблона dense и rerank берутся из внешних HTTP endpoint'ов,
 # которые предоставляет проверяющая система.
 # Текущий код ниже — минимальный пример search pipeline.
-DENSE_PREFETCH_K = 10
-SPRASE_PREFETCH_K = 30
-RETRIEVE_K = 20
-RERANK_LIMIT = 10
+DENSE_PREFETCH_K = 50
+SPRASE_PREFETCH_K = 50
+RETRIEVE_K = 50
+RERANK_LIMIT = 200
+REFORMULATIONS_LIMIT = 5
+
 
 async def embed_dense(client: httpx.AsyncClient, text: str) -> list[float]:
     # Dense endpoint ожидает OpenAI-compatible body с input как списком строк.
@@ -280,7 +282,7 @@ async def rerank_points(
     query: str,
     points: list[Any],
 ) -> list[Any]:
-    rerank_candidates = points[:10]
+    rerank_candidates = points[:RERANK_LIMIT]
     rerank_targets = [point.payload.get("page_content") for point in rerank_candidates]
     scores = await get_rerank_scores(client, query, rerank_targets)
 
@@ -311,9 +313,32 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     client: httpx.AsyncClient = app.state.http
     qdrant: AsyncQdrantClient = app.state.qdrant
 
-    dense_vector = await embed_dense(client, query)
-    sparse_vector = await embed_sparse(query)
-    best_points = await qdrant_search(qdrant, dense_vector, sparse_vector)
+    all_points = []
+    all_points_set = set()
+
+    all_query_variants = [query]
+
+    if payload.question.variants:
+        all_query_variants.extend(payload.question.variants)
+
+    for query in all_query_variants[:REFORMULATIONS_LIMIT]:
+
+        # build_enhanced_query
+        enhanced_query = query
+
+        dense_vector = await embed_dense(client, enhanced_query)
+        sparse_vector = await embed_sparse(enhanced_query)
+ 
+        base_points = await qdrant_search(qdrant, dense_vector, sparse_vector)
+        
+        for point in base_points:
+            point_id = extract_message_ids(point)
+
+            if point_id not in all_points_set:
+                all_points_set.update(point_id)
+                all_points.append(point)
+
+    best_points = all_points[:200]
 
     if best_points is None:
         return SearchAPIResponse(results=[])

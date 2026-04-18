@@ -116,89 +116,178 @@ def render_message(message: Message) -> str:
     return text
 
 
-def enrich_chunk_text(
-    chunk_text: str,           # оригинальный текст чанка (без метаданных)
+def build_dense_metadata(
     chat: Chat,
-    messages_in_chunk: list[Message],  # сообщения, входящие в этот чанк
-    message_ranges: list[tuple[int, int, str]],  # (start, end, msg_id) в chunk_text
-    max_len: int,
-) -> list[tuple[str, list[str]]]:   # возвращает список (обогащённый_текст, [id_сообщений])
-    # Формируем строку метаданных
-    meta_lines = []
-    len_characters_meta_lines = 0
+    messages_in_chunk: list[Message],
+    max_meta_len: int,
+) -> str:
+    """Формирует строку метаданных для dense-вектора с ограничением длины."""
+    meta_parts = []
+    current_len = 0
 
-    # Информация из чата
-    chat_info = f"[Chat: {chat.name} ({chat.type})]"
-    meta_lines.append(chat_info)
-    len_characters_meta_lines += len(chat_info)
+    # Название и тип чата
+    chat_info = f"[chat: {chat.name} ({chat.type})]"
+    meta_parts.append(chat_info)
+    current_len += len(chat_info) + 1  # +1 для пробела
 
-    members_emails = []
+    # Имена участников (первые 5, без email)
     if chat.members:
-        member_names = [str(m.get("name") or m.get("id", "")) for m in chat.members[:5]]
-        members_emails = [str(m.get("email", "")) for m in chat.members[:5]]
-        members_info = f"[people: {', '.join(member_names)}]"
-        meta_lines.append(members_info)
-        len_characters_meta_lines += len(members_info)
+        names = []
+        for m in chat.members[:5]:
+            name = str(m.get("name") or m.get("id", ""))
+            if name:
+                # Проверяем, влезет ли с учётом разделителя
+                additional = len(name) + 2  # ", " или начало
+                if current_len + additional + len("[people: ]") <= max_meta_len:
+                    names.append(name)
+                    current_len += additional
+                else:
+                    break
+        if names:
+            people_str = f"[people: {', '.join(names)}]"
+            # Если не влезает целиком, то не добавляем
+            if current_len + len(people_str) <= max_meta_len:
+                meta_parts.append(people_str)
+                current_len += len(people_str) + 1
 
-    # Информация из Message
-    all_mentions = set()
-    senders_emails = set()
+    # Флаги (пересылка, цитата)
+    flags = []
+    if any(m.is_forward for m in messages_in_chunk):
+        flags.append("forward")
+    if any(m.is_quote for m in messages_in_chunk):
+        flags.append("quote")
+    if flags:
+        flags_str = f"[flags: {' '.join(flags)}]"
+        if current_len + len(flags_str) <= max_meta_len:
+            meta_parts.append(flags_str)
+            # current_len обновлять не обязательно, так как дальше не используем
+
+    return " ".join(meta_parts) + " "
+
+
+def build_sparse_metadata(
+    chat: Chat,
+    messages_in_chunk: list[Message],
+    max_meta_len: int,
+) -> str:
+    """Формирует строку метаданных для sparse-вектора с ограничением длины."""
+    meta_parts = []
+    current_len = 0
+
+    # chat_sn (точный идентификатор)
+    if chat.sn:
+        sn_str = f"[chat_sn: {chat.sn}]"
+        meta_parts.append(sn_str)
+        current_len += len(sn_str) + 1
+
+    # Email'ы: из членов чата, отправителей, упоминаний
+    emails = set()
+    if chat.members:
+        for m in chat.members:
+            email = m.get("email")
+            if email:
+                emails.add(str(email))
     for msg in messages_in_chunk:
+        if msg.sender_id:
+            emails.add(msg.sender_id)
         if msg.mentions:
-            all_mentions.update(msg.mentions[:5])
-            senders_emails.add(msg.sender_id)
+            emails.update(msg.mentions)
 
-    all_mentions.update(members_emails)
-    all_mentions.update(senders_emails)
-
-    mentions_line = "[emails: "
-    mentions_emails = []
-    len_characters_meta_lines += len(mentions_line) + 1
-    if all_mentions:
-        for mention in all_mentions:
-            if len(mention) + len_characters_meta_lines > META_INFO_SIZE:
-                break
+    # Добавляем email'ы, пока не упрёмся в лимит
+    if emails:
+        email_list = []
+        base_len = len("[emails: ]") + current_len
+        for email in emails:
+            # +2 на пробел и запятую/конец
+            additional = len(email) + 2
+            if base_len + additional <= max_meta_len:
+                email_list.append(email)
+                base_len += additional
             else:
-                mentions_emails.append(mention)
-                len_characters_meta_lines += len(mention) + 1
+                break
+        if email_list:
+            emails_str = f"[emails: {' '.join(email_list)}]"
+            # Проверяем ещё раз полную длину (с учётом уже добавленных частей)
+            if current_len + len(emails_str) <= max_meta_len:
+                meta_parts.append(emails_str)
+                current_len += len(emails_str) + 1
 
-    mention_info = f"[emails: {' '.join(mentions_emails)}]"
-    meta_lines.append(mention_info)
-    # if has_forward:
-    #     meta_lines.append("[Есть пересылка]")
-    # if has_quote:
-    #     meta_lines.append("[Есть цитата]")
-    
-    meta_str = " ".join(meta_lines) + " "
-    total_len = len(meta_str) + len(chunk_text)
+    # Ссылки (упрощённо: ищем http в file_snippets)
+    links = set()
+    for msg in messages_in_chunk:
+        if msg.file_snippets:
+            import re
+            found = re.findall(r'https?://\S+', msg.file_snippets)
+            links.update(found)
+    if links:
+        link_list = []
+        base_len = len("[links: ]") + current_len
+        for link in links:
+            additional = len(link) + 2
+            if base_len + additional <= max_meta_len:
+                link_list.append(link)
+                base_len += additional
+            else:
+                break
+        if link_list:
+            links_str = f"[links: {' '.join(link_list)}]"
+            if current_len + len(links_str) <= max_meta_len:
+                meta_parts.append(links_str)
+                # current_len можно не обновлять, т.к. дальше не используем
 
-    # Если влезает – возвращаем один чанк
-    if total_len <= max_len:
-        result_merged = [(meta_str + chunk_text, [msg_id for _, _, msg_id in message_ranges])]
-        result_row = [(chunk_text, [msg_id for _, _, msg_id in message_ranges])]
-        return result_merged, result_row
+    return " ".join(meta_parts) + " "
 
-    # Иначе делим chunk_text на две части по границам сообщений
-    # Находим точку раздела – половину длины текста
+
+def enrich_chunk_text(
+    chunk_text: str,
+    chat: Chat,
+    messages_in_chunk: list[Message],
+    message_ranges: list[tuple[int, int, str]],  # (start, end, msg_id) внутри chunk_text
+    max_len: int,
+) -> tuple[
+    list[tuple[str, list[str]]],  # dense_chunks
+    list[tuple[str, list[str]]],  # sparse_chunks
+    list[tuple[str, list[str]]],  # page_chunks
+]:
+    """
+    Возвращает три списка чанков одинаковой длины.
+    Каждый элемент списка: (текст_чанка, список message_ids)
+    """
+    # Формируем метаданные для dense и sparse с ограничением по длине
+    dense_meta_str = build_dense_metadata(chat, messages_in_chunk, META_INFO_SIZE)
+    sparse_meta_str = build_sparse_metadata(chat, messages_in_chunk, META_INFO_SIZE)
+
+    # Проверяем, нужно ли разбиение (если хотя бы один из трёх текстов превышает max_len)
+    total_dense_len = len(dense_meta_str) + len(chunk_text)
+    total_sparse_len = len(sparse_meta_str) + len(chunk_text)
+    total_page_len = len(chunk_text)
+    need_split = total_dense_len > max_len or total_sparse_len > max_len or total_page_len > max_len
+
+    if not need_split:
+        # Один чанк для каждого типа
+        msg_ids = [msg_id for _, _, msg_id in message_ranges]
+        dense_chunks = [(dense_meta_str + chunk_text, msg_ids)]
+        sparse_chunks = [(sparse_meta_str + chunk_text, msg_ids)]
+        page_chunks = [(chunk_text, msg_ids)]
+        return dense_chunks, sparse_chunks, page_chunks
+
+    # Разбиваем chunk_text на две части (как в исходном коде)
     split_point = len(chunk_text) // 2
-    # Корректируем split_point до ближайшей границы сообщения
     best_split = split_point
     for start, end, _ in message_ranges:
         if start <= split_point <= end:
-            # Если точка раздела внутри сообщения, отдаём всё сообщение в первую часть
             best_split = end
             break
         elif start > split_point:
             best_split = start
             break
     else:
-        # Если не нашли, оставляем split_point как есть
         best_split = split_point
-    
+
     part1_text = chunk_text[:best_split]
     part2_text = chunk_text[best_split:]
-    
-    # Распределяем message_ids по частям
+
+    # Распределяем message_ids
     part1_ids = []
     part2_ids = []
     for start, end, msg_id in message_ranges:
@@ -206,21 +295,128 @@ def enrich_chunk_text(
             part1_ids.append(msg_id)
         if end > best_split:
             part2_ids.append(msg_id)
-        # Если сообщение ровно на границе (end == best_split), включаем его в первую часть
         elif end == best_split:
             part1_ids.append(msg_id)
 
-    # Формируем результат: две части с одними и теми же метаданными
-    result_merged = []
-    result_row = []
-    if part1_text.strip():
-        result_merged.append((meta_str + part1_text, part1_ids))
-        result_row.append((part1_text, part1_ids))
-    if part2_text.strip():
-        result_merged.append((meta_str + part2_text, part2_ids))
-        result_row.append((part2_text, part2_ids))
+    dense_chunks = []
+    sparse_chunks = []
+    page_chunks = []
+
+    for part_text, part_ids in [(part1_text, part1_ids), (part2_text, part2_ids)]:
+        if not part_text.strip():
+            continue
+        dense_chunks.append((dense_meta_str + part_text, part_ids))
+        sparse_chunks.append((sparse_meta_str + part_text, part_ids))
+        page_chunks.append((part_text, part_ids))
+
+    return dense_chunks, sparse_chunks, page_chunks
+
+
+# def enrich_chunk_text(
+#     chunk_text: str,           # оригинальный текст чанка (без метаданных)
+#     chat: Chat,
+#     messages_in_chunk: list[Message],  # сообщения, входящие в этот чанк
+#     message_ranges: list[tuple[int, int, str]],  # (start, end, msg_id) в chunk_text
+#     max_len: int,
+# ) -> list[tuple[str, list[str]]]:   # возвращает список (обогащённый_текст, [id_сообщений])
+#     # Формируем строку метаданных
+#     meta_lines = []
+#     len_characters_meta_lines = 0
+
+#     # Информация из чата
+#     chat_info = f"[Chat: {chat.name} ({chat.type})]"
+#     meta_lines.append(chat_info)
+#     len_characters_meta_lines += len(chat_info)
+
+#     members_emails = []
+#     if chat.members:
+#         member_names = [str(m.get("name") or m.get("id", "")) for m in chat.members[:5]]
+#         members_emails = [str(m.get("email", "")) for m in chat.members[:5]]
+#         members_info = f"[people: {', '.join(member_names)}]"
+#         meta_lines.append(members_info)
+#         len_characters_meta_lines += len(members_info)
+
+#     # Информация из Message
+#     all_mentions = set()
+#     senders_emails = set()
+#     for msg in messages_in_chunk:
+#         if msg.mentions:
+#             all_mentions.update(msg.mentions[:5])
+#             senders_emails.add(msg.sender_id)
+
+#     all_mentions.update(members_emails)
+#     all_mentions.update(senders_emails)
+
+#     mentions_line = "[emails: "
+#     mentions_emails = []
+#     len_characters_meta_lines += len(mentions_line) + 1
+#     if all_mentions:
+#         for mention in all_mentions:
+#             if len(mention) + len_characters_meta_lines > META_INFO_SIZE:
+#                 break
+#             else:
+#                 mentions_emails.append(mention)
+#                 len_characters_meta_lines += len(mention) + 1
+
+#     mention_info = f"[emails: {' '.join(mentions_emails)}]"
+#     meta_lines.append(mention_info)
+#     # if has_forward:
+#     #     meta_lines.append("[Есть пересылка]")
+#     # if has_quote:
+#     #     meta_lines.append("[Есть цитата]")
     
-    return result_merged, result_row
+#     meta_str = " ".join(meta_lines) + " "
+#     total_len = len(meta_str) + len(chunk_text)
+
+#     # Если влезает – возвращаем один чанк
+#     if total_len <= max_len:
+#         result_merged = [(meta_str + chunk_text, [msg_id for _, _, msg_id in message_ranges])]
+#         result_row = [(chunk_text, [msg_id for _, _, msg_id in message_ranges])]
+#         return result_merged, result_row
+
+#     # Иначе делим chunk_text на две части по границам сообщений
+#     # Находим точку раздела – половину длины текста
+#     split_point = len(chunk_text) // 2
+#     # Корректируем split_point до ближайшей границы сообщения
+#     best_split = split_point
+#     for start, end, _ in message_ranges:
+#         if start <= split_point <= end:
+#             # Если точка раздела внутри сообщения, отдаём всё сообщение в первую часть
+#             best_split = end
+#             break
+#         elif start > split_point:
+#             best_split = start
+#             break
+#     else:
+#         # Если не нашли, оставляем split_point как есть
+#         best_split = split_point
+    
+#     part1_text = chunk_text[:best_split]
+#     part2_text = chunk_text[best_split:]
+    
+#     # Распределяем message_ids по частям
+#     part1_ids = []
+#     part2_ids = []
+#     for start, end, msg_id in message_ranges:
+#         if start < best_split:
+#             part1_ids.append(msg_id)
+#         if end > best_split:
+#             part2_ids.append(msg_id)
+#         # Если сообщение ровно на границе (end == best_split), включаем его в первую часть
+#         elif end == best_split:
+#             part1_ids.append(msg_id)
+
+#     # Формируем результат: две части с одними и теми же метаданными
+#     result_merged = []
+#     result_row = []
+#     if part1_text.strip():
+#         result_merged.append((meta_str + part1_text, part1_ids))
+#         result_row.append((part1_text, part1_ids))
+#     if part2_text.strip():
+#         result_merged.append((meta_str + part2_text, part2_ids))
+#         result_row.append((part2_text, part2_ids))
+    
+#     return result_merged, result_row
 
 
 def build_chunks(

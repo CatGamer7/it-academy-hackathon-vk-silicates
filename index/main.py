@@ -272,7 +272,10 @@ def build_chunks(
         # Находим сообщения, которые полностью или частично входят в чанк
         chunk_msg_ids = {msg_id for _, _, msg_id in chunk_body_ranges}
         chunk_messages = [msg for msg in new_messages if msg.id in chunk_msg_ids]
-        sparse_chunk_text_meta = build_sparse_metadata(chat, chunk_messages, CHUNK_SIZE)
+        sparse_chunk_text_meta = build_sparse_metadata(chat, chunk_messages, CHUNK_SIZE + OVERLAP_SIZE)
+        if chunk_body:
+            left_len = CHUNK_SIZE + OVERLAP_SIZE - len(sparse_chunk_text_meta)
+            sparse_chunk_text_meta += chunk_body[:left_len]
 
         result.append(
             IndexAPIItem(

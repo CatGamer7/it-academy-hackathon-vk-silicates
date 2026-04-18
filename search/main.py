@@ -446,11 +446,22 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
 
     final_points = reranked + best_points[RERANK_LIMIT:]
 
-    message_ids: list[str] = [] 
-    for point in final_points:
-        message_ids += extract_message_ids(point)
+    seen_message_ids = set()
+    message_ids: list[str] = []
 
-    message_ids = message_ids[:API_ANSWER_LIMIT]
+    for point in final_points:
+
+        for msg_id in extract_message_ids(point):
+
+            if msg_id not in seen_message_ids:
+                seen_message_ids.add(msg_id)
+                message_ids.append(msg_id)
+
+                if len(message_ids) >= API_ANSWER_LIMIT:
+                    break
+                
+        if len(message_ids) >= API_ANSWER_LIMIT:
+            break
 
     return SearchAPIResponse(
         results=[SearchAPIItem(message_ids=message_ids)]

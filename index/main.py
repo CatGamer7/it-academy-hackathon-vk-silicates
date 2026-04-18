@@ -183,6 +183,12 @@ def build_sparse_metadata(
             emails.add(msg.sender_id)
         if msg.mentions:
             emails.update(msg.mentions)
+        if msg.parts:
+            for part in msg.parts:
+                # parts различаются по своему типу, см. README.md
+                part_text = part.get("sn")
+                if isinstance(part_text, str) and part_text:
+                    emails.add(part_text)
 
     # Добавляем email'ы, пока не упрёмся в лимит
     if emails:

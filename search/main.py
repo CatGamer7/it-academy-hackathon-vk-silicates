@@ -182,11 +182,11 @@ app = FastAPI(title="Search Service", version="0.1.0", lifespan=lifespan)
 # Внутри шаблона dense и rerank берутся из внешних HTTP endpoint'ов,
 # которые предоставляет проверяющая система.
 # Текущий код ниже — минимальный пример search pipeline.
-DENSE_PREFETCH_K = 50
-SPRASE_PREFETCH_K = 50
-RETRIEVE_K = 50
+DENSE_PREFETCH_K = 75
+SPRASE_PREFETCH_K = 150
+RETRIEVE_K = 75
 API_ANSWER_LIMIT = 50
-RERANK_LIMIT = 200
+RERANK_LIMIT = 50
 REFORMULATIONS_LIMIT = 5
 DENSE_EMBED_LIMIT = 32_000
 
@@ -386,9 +386,6 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     client: httpx.AsyncClient = app.state.http
     qdrant: AsyncQdrantClient = app.state.qdrant
 
-    all_points = []
-    all_points_set = set()
-
     all_query_variants = [query_text]
 
     if question.variants:
@@ -396,26 +393,11 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
 
     combined_query = combine_query(all_query_variants)
     combined_enhanced_query = build_enhanced_query(question, combined_query)[:DENSE_EMBED_LIMIT]
+
     dense_vector = await embed_dense(client, combined_enhanced_query)
+    sparse_vector = await embed_sparse(combined_enhanced_query)
 
-    for query in all_query_variants[:REFORMULATIONS_LIMIT]:
-
-        # build_enhanced_query
-        enhanced_query = build_enhanced_query(question, query)
-
-        sparse_vector = await embed_sparse(enhanced_query)
-
-        base_points = await qdrant_search(qdrant, dense_vector, sparse_vector)
-        if not bool(base_points):
-            continue
-        for point in base_points:
-            point_id = point.id
-
-            if point_id not in all_points_set:
-                all_points_set.add(point_id)
-                all_points.append(point)
-
-    best_points = all_points[:RERANK_LIMIT]
+    best_points = await qdrant_search(qdrant, dense_vector, sparse_vector)
 
     if not best_points:
         return SearchAPIResponse(results=[])
@@ -428,6 +410,7 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     if not best_points:
         return SearchAPIResponse(results=[])
 
+    best_points = best_points[:RERANK_LIMIT]
     enhanced_query = build_enhanced_query(question, query_text)
     reranked_points = await rerank_points(client, enhanced_query, best_points)
 

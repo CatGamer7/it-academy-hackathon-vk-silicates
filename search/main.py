@@ -385,7 +385,7 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     all_points_set = set()
 
     all_query_variants = [query_text]
-    all_enhanced_queries = []
+    
     if question.variants:
         all_query_variants.extend(question.variants)
     
@@ -393,7 +393,6 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
 
         # build_enhanced_query
         enhanced_query = build_enhanced_query(question, query)
-        all_enhanced_queries.append(enhanced_query)
         dense_vector = await embed_dense(client, enhanced_query)
         sparse_vector = await embed_sparse(enhanced_query)
 
@@ -420,7 +419,7 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     if not best_points:
         return SearchAPIResponse(results=[])
 
-    reranking_query = " ".join(all_enhanced_queries)[:8000]
+    reranking_query = build_enhanced_query(question, " ".join(all_query_variants))[:8000]
     print(f"Len of RQ = {len(reranking_query)}\n {reranking_query}")
     reranked_points = await rerank_points(client, reranking_query, best_points)
 

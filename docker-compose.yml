@@ -56,7 +56,7 @@ services:
       QDRANT_SPARSE_VECTOR_NAME: sparse
       EMBEDDINGS_DENSE_URL: ${EMBEDDINGS_DENSE_URL:-http://83.166.249.64:18001/embeddings}
       RERANKER_URL: ${RERANKER_URL:-http://83.166.249.64:18001/score}
-      OPEN_API_LOGIN: ${OPEN_API_LOGIN:?set OPEN_API_LOGIN before docker compose up}
-      OPEN_API_PASSWORD: ${OPEN_API_PASSWORD:?set OPEN_API_PASSWORD before docker compose up}
+      OPEN_API_LOGIN: "caec12968ecbd95a"
+      OPEN_API_PASSWORD: "c4eaa5009033c848df2dcc2b5b9b86c5"
     ports:
       - "8002:8000"

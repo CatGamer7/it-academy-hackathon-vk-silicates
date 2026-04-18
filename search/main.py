@@ -418,6 +418,18 @@ def get_sparse_query(query_base: str, question: Question):
     
     return string_so_far
 
+def enrich_query_with_variants(query_base: str, question: Question) -> str:
+    variants = question.variants or []
+    hyde = question.hyde or []
+
+    all_variants = variants + hyde
+    if not all_variants:
+        return query_base
+
+    variants_str = " ".join(all_variants)
+    enriched_query = f"{query_base} {variants_str}"
+
+    return enriched_query[:RERANK_QUERY_LIMIT]
 
 @app.post("/search", response_model=SearchAPIResponse)
 async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
@@ -429,8 +441,11 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
 
     client: httpx.AsyncClient = app.state.http
     qdrant: AsyncQdrantClient = app.state.qdrant
-
-    dense_vector = await embed_dense(client, query)
+    
+    dense_vector = await embed_dense(
+        client, 
+        enrich_query_with_variants(query, question)
+    )
 
     sparse_query = get_sparse_query(query, question)
     sparse_vector = await embed_sparse(sparse_query)
@@ -441,7 +456,7 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
         return SearchAPIResponse(results=[])
 
     to_rerank = best_points[:RERANK_LIMIT]
-    
+
     reranked = await rerank_points(client, query, to_rerank)
 
     final_points = reranked + best_points[RERANK_LIMIT:]

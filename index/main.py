@@ -88,7 +88,7 @@ app = FastAPI(title="Index Service", version="0.1.0")
 # Ваша внутренняя логика построения чанков. Можете делать всё, что посчитаете нужным.
 # Текущий код – минимальный пример
 
-CHUNK_SIZE = 512
+CHUNK_SIZE = 1024
 OVERLAP_SIZE = 256
 SPARSE_MODEL_NAME = "Qdrant/bm25"
 FASTEMBED_CACHE_PATH = "/models/fastembed"
@@ -107,6 +107,8 @@ def render_message(message: Message) -> str:
         for part in message.parts:
             # parts различаются по своему типу, см. README.md
             part_text = part.get("text")
+            if part.get("mediaType") == "quote":
+                part_text = "quote: [" + part_text + "]"
             if isinstance(part_text, str) and part_text:
                 parts_text.append(part_text)
         if parts_text:

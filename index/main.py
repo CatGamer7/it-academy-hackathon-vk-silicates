@@ -111,7 +111,7 @@ def render_message(message: Message) -> str:
             if isinstance(part_text, str) and part_text:
                 if part.get("mediaType") == "quote":
                     part_text = "quote: [" + re.sub(r'\s+', ' ', part_text).strip() + "]"
-                parts_text.append(part_text)
+                parts_text.append(re.sub(r'\s+', ' ', part_text).strip())
         if parts_text:
             text += " " + " ".join(parts_text)
 

@@ -336,6 +336,8 @@ def build_enhanced_query(question: Question, query: str) -> str:
             parts.append("names: " + " ".join(question.entities.names))
         if question.entities.links:
             parts.append("links: " + " ".join(question.entities.links))
+        if question.asker:
+            parts.append("asked by: " + question.asker)
     return " ".join(parts)
 
 

@@ -110,12 +110,104 @@ def render_message(message: Message) -> str:
             if isinstance(part_text, str) and part_text:
                 parts_text.append(part_text)
         if parts_text:
-            text += "\n".join(parts_text)
+            text += " " + "\n".join(parts_text)
 
     return text
 
 
+def build_sparse_metadata(
+    chat: Chat,
+    messages_in_chunk: list[Message],
+    max_meta_len: int,
+) -> str:
+    """Формирует строку метаданных для sparse-вектора с ограничением длины."""
+    meta_parts = []
+    current_len = 0
+
+    # Название и тип чата
+    chat_info = f"[chat: {chat.name}"
+    meta_parts.append(chat_info)
+    current_len += len(chat_info) + 1  # +1 для пробела
+
+    # Имена участников (первые 5, без email)
+    if chat.members:
+        names = []
+        for m in chat.members[:5]:
+            name = str(m.get("name") or m.get("id", ""))
+            if name:
+                # Проверяем, влезет ли с учётом разделителя
+                additional = len(name) + 2  # ", " или начало
+                if current_len + additional + len("[people: ]") <= max_meta_len:
+                    names.append(name)
+                    current_len += additional
+                else:
+                    break
+        if names:
+            people_str = f"[people: {', '.join(names)}]"
+            # Если не влезает целиком, то не добавляем
+            if current_len + len(people_str) <= max_meta_len:
+                meta_parts.append(people_str)
+                current_len += len(people_str) + 1
+
+    # Ссылки (упрощённо: ищем http в file_snippets)
+    links = set()
+    for msg in messages_in_chunk:
+        if msg.file_snippets:
+            import re
+            found = re.findall(r'https?://(\S+)', msg.file_snippets)
+            links.update(found)
+    if links:
+        link_list = []
+        base_len = len("[links: ]") + current_len
+        for link in links:
+            additional = len(link) + 2
+            if base_len + additional <= max_meta_len:
+                link_list.append(link)
+                base_len += additional
+            else:
+                break
+        if link_list:
+            links_str = f"[links: {' '.join(link_list)}]"
+            if current_len + len(links_str) <= max_meta_len:
+                meta_parts.append(links_str)
+
+    # Email'ы: из членов чата, отправителей, упоминаний
+    emails = set()
+    if chat.members:
+        for m in chat.members:
+            email = m.get("email")
+            if email:
+                emails.add(str(email))
+    for msg in messages_in_chunk:
+        if msg.sender_id:
+            emails.add(msg.sender_id)
+        if msg.mentions:
+            emails.update(msg.mentions)
+
+    # Добавляем email'ы, пока не упрёмся в лимит
+    if emails:
+        email_list = []
+        base_len = len("[emails: ]") + current_len
+        for email in emails:
+            # +2 на пробел и запятую/конец
+            additional = len(email) + 2
+            if base_len + additional <= max_meta_len:
+                email_list.append(email)
+                base_len += additional
+            else:
+                break
+        if email_list:
+            emails_str = f"[emails: {' '.join(email_list)}]"
+            # Проверяем ещё раз полную длину (с учётом уже добавленных частей)
+            if current_len + len(emails_str) <= max_meta_len:
+                meta_parts.append(emails_str)
+                current_len += len(emails_str) + 1
+
+    return " ".join(meta_parts)
+
+
 def build_chunks(
+    chat: Chat,
     overlap_messages: list[Message],
     new_messages: list[Message],
 ) -> list[IndexAPIItem]:
@@ -177,11 +269,16 @@ def build_chunks(
             chunk_text += "\n"
         chunk_text += chunk_body
 
+        # Находим сообщения, которые полностью или частично входят в чанк
+        chunk_msg_ids = {msg_id for _, _, msg_id in chunk_body_ranges}
+        chunk_messages = [msg for msg in new_messages if msg.id in chunk_msg_ids]
+        sparse_chunk_text_meta = build_sparse_metadata(chat, chunk_messages, CHUNK_SIZE)
+
         result.append(
             IndexAPIItem(
                 page_content=chunk_text,
                 dense_content=chunk_text,
-                sparse_content=chunk_text,
+                sparse_content=sparse_chunk_text_meta,
                 message_ids=[message_id for _, _, message_id in chunk_body_ranges],
             )
         )
@@ -199,6 +296,7 @@ async def health() -> dict[str, str]:
 async def index(payload: IndexAPIRequest) -> IndexAPIResponse:
     return IndexAPIResponse(
         results=build_chunks(
+            payload.data.chat,
             payload.data.overlap_messages,
             payload.data.new_messages,
         )

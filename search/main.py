@@ -179,7 +179,6 @@ RERANK_LIMIT = 50
 REFORMULATIONS_LIMIT = 5
 DENSE_EMBED_LIMIT = 32_000
 RERANK_QUERY_LIMIT = 8_000
-DENSE_WEIGHT = 0.8
 SPARSE_LEHGTH = 512
 
 
@@ -238,8 +237,7 @@ async def qdrant_search(
             ),
         ],
         query=models.FusionQuery(
-            fusion=models.Fusion.WEIGHTED,
-            weights=[DENSE_WEIGHT, 1 - DENSE_WEIGHT],
+            fusion=models.Fusion.RRF
         ),
         limit=RETRIEVE_K,
         # filter=models.Filter(
@@ -336,10 +334,14 @@ def build_list_to_len(in_list: list[str], max_len: int):
 
 
 def get_sparse_query(question: Question):
+    
+    entities = question.entities
+
+    if not entities:
+        return f"{question.search_text} {question.asker}"[:SPARSE_LEHGTH]
 
     main_str = f"{question.search_text} {question.asker}"[:SPARSE_LEHGTH // 4]
 
-    entities = question.entities
     people_str = build_list_to_len(entities.people, SPARSE_LEHGTH // 4)
     links_str = build_list_to_len(entities.links, SPARSE_LEHGTH // 4)
 

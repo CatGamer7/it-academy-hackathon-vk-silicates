@@ -396,9 +396,10 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
 
         dense_vector = await embed_dense(client, enhanced_query)
         sparse_vector = await embed_sparse(enhanced_query)
- 
+
         base_points = await qdrant_search(qdrant, dense_vector, sparse_vector)
-        
+        if not bool(base_points):
+            continue
         for point in base_points:
             point_id = point.id
 

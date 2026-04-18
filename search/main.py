@@ -2,7 +2,8 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from functools import lru_cache
-from typing import Any
+from typing import Any, Optional
+from datetime import datetime
 
 import httpx
 from fastembed import SparseTextEmbedding
@@ -34,7 +35,7 @@ REQUIRED_ENV_VARS = [
     "RERANKER_URL",
     "QDRANT_URL",
 ]
- 
+
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("search-service")
 
@@ -129,6 +130,7 @@ class SparseVector(BaseModel):
 class SparseEmbeddingResponse(BaseModel):
     vectors: list[SparseVector]
 
+
 # Метадата чанков в Qdrant'e, по которой вы можете фильтровать
 class ChunkMetadata(BaseModel):
     chat_name: str
@@ -143,6 +145,15 @@ class ChunkMetadata(BaseModel):
     mentions: list[str] = Field(default_factory=list)
     contains_forward: bool = False
     contains_quote: bool = False
+
+
+class IndexAPIItem(BaseModel):
+    page_content: str
+    dense_content: str
+    sparse_content: str
+    message_ids: list[str]
+    keywords: list[str] = []
+    entities: dict[str, list[str]] = {}
 
 
 @lru_cache(maxsize=1)
@@ -171,10 +182,13 @@ app = FastAPI(title="Search Service", version="0.1.0", lifespan=lifespan)
 # Внутри шаблона dense и rerank берутся из внешних HTTP endpoint'ов,
 # которые предоставляет проверяющая система.
 # Текущий код ниже — минимальный пример search pipeline.
-DENSE_PREFETCH_K = 10
-SPRASE_PREFETCH_K = 30
-RETRIEVE_K = 20
-RERANK_LIMIT = 10
+DENSE_PREFETCH_K = 50
+SPRASE_PREFETCH_K = 50
+RETRIEVE_K = 50
+API_ANSWER_LIMIT = 50
+RERANK_LIMIT = 200
+REFORMULATIONS_LIMIT = 5
+
 
 async def embed_dense(client: httpx.AsyncClient, text: str) -> list[float]:
     # Dense endpoint ожидает OpenAI-compatible body с input как списком строк.
@@ -280,7 +294,7 @@ async def rerank_points(
     query: str,
     points: list[Any],
 ) -> list[Any]:
-    rerank_candidates = points[:10]
+    rerank_candidates = points[:RERANK_LIMIT]
     rerank_targets = [point.payload.get("page_content") for point in rerank_candidates]
     scores = await get_rerank_scores(client, query, rerank_targets)
 
@@ -302,31 +316,120 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+# Добавляем метаданные
+def build_enhanced_query(question: Question, query: str) -> str:
+    parts = [query]
+    if question.keywords:
+        parts.append("keywords: " + " ".join(question.keywords))
+    if question.date_mentions:
+        parts.append("date mentioned: " + " ".join(question.date_mentions))
+    if question.entities:
+        if question.entities.people:
+            parts.append("people: " + " ".join(question.entities.people))
+        if question.entities.emails:
+            parts.append("emails: " + " ".join(question.entities.emails))
+        if question.entities.documents:
+            parts.append("documents: " + " ".join(question.entities.documents))
+        if question.entities.names:
+            parts.append("names: " + " ".join(question.entities.names))
+        if question.entities.links:
+            parts.append("links: " + " ".join(question.entities.links))
+    return " ".join(parts)
+
+
+# Фильтрация по датам
+def parse_iso_date(date_str: str) -> datetime:
+    if date_str.endswith('Z'):
+        date_str = date_str[:-1] + '+00:00'
+    return datetime.fromisoformat(date_str)
+
+
+def intervals_overlap(chunk_start: Optional[str], chunk_end: Optional[str], req_from: str, req_to: str) -> bool:
+    if not chunk_start or not chunk_end:
+        return False
+    try:
+        start = parse_iso_date(chunk_start)
+        end = parse_iso_date(chunk_end)
+        req_start = parse_iso_date(req_from)
+        req_end = parse_iso_date(req_to)
+        return start <= req_end and end >= req_start
+    except Exception:
+        return False
+
+
+def filter_points_by_date_range(points: list, date_range: Optional[DateRange]) -> list:
+    if not date_range:
+        return points
+    filtered = []
+    for point in points:
+        payload = point.payload or {}
+        metadata = payload.get("metadata") or {}
+        chunk_start = metadata.get("start")
+        chunk_end = metadata.get("end")
+        if intervals_overlap(chunk_start, chunk_end, date_range.from_, date_range.to):
+            filtered.append(point)
+    return filtered
+
+
 @app.post("/search", response_model=SearchAPIResponse)
 async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
-    query = payload.question.text.strip()
-    if not query:
+    question = payload.question
+    query_text = question.text.strip()
+    if not query_text:
         raise HTTPException(status_code=400, detail="question.text is required")
 
     client: httpx.AsyncClient = app.state.http
     qdrant: AsyncQdrantClient = app.state.qdrant
 
-    dense_vector = await embed_dense(client, query)
-    sparse_vector = await embed_sparse(query)
-    best_points = await qdrant_search(qdrant, dense_vector, sparse_vector)
+    all_points = []
+    all_points_set = set()
 
-    if best_points is None:
+    all_query_variants = [query_text]
+
+    if question.variants:
+        all_query_variants.extend(question.variants)
+
+    for query in all_query_variants[:REFORMULATIONS_LIMIT]:
+
+        # build_enhanced_query
+        enhanced_query = build_enhanced_query(question, query)
+
+        dense_vector = await embed_dense(client, enhanced_query)
+        sparse_vector = await embed_sparse(enhanced_query)
+
+        base_points = await qdrant_search(qdrant, dense_vector, sparse_vector)
+        if not bool(base_points):
+            continue
+        for point in base_points:
+            point_id = point.id
+
+            if point_id not in all_points_set:
+                all_points_set.add(point_id)
+                all_points.append(point)
+
+    best_points = all_points[:RERANK_LIMIT]
+
+    if not best_points:
         return SearchAPIResponse(results=[])
 
-    best_points = await rerank_points(client, query, list(best_points))
+    # Применяем фильтр по датам
+    if question.date_range:
+        best_points = filter_points_by_date_range(best_points, question.date_range)
+        logger.debug(f"After date filter: {len(best_points)} points")
 
-    message_ids: list[str] = [] 
-    for point in best_points:
+    if not best_points:
+        return SearchAPIResponse(results=[])
+
+    enhanced_query = build_enhanced_query(question, query_text)
+    reranked_points = await rerank_points(client, enhanced_query, best_points)
+
+    message_ids = []
+    for point in reranked_points:
         message_ids += extract_message_ids(point)
+    
+    message_ids = message_ids[:API_ANSWER_LIMIT]
 
-    return SearchAPIResponse(
-        results=[SearchAPIItem(message_ids=message_ids)]
-    )
+    return SearchAPIResponse(results=[SearchAPIItem(message_ids=message_ids)])
 
 
 @app.exception_handler(Exception)

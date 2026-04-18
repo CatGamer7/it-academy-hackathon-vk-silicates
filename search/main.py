@@ -229,6 +229,19 @@ async def embed_sparse(text: str) -> SparseVector:
     )
 
 
+def validate_iso_date(date_str: str | None) -> str | None:
+    
+    if not date_str:
+        return None
+    
+    try:
+        datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        return date_str
+    
+    except (ValueError, TypeError):
+        return None
+
+
 async def qdrant_search(
     client: AsyncQdrantClient,
     dense_vector: list[float],
@@ -240,26 +253,29 @@ async def qdrant_search(
 
     if question.date_range is not None:
 
-        date_filters = [
-            models.FieldCondition(
-                key="metadata.start",
-                range=models.DatetimeRange(
-                    gt=question.date_range.from_,
-                ),
-            ),
-            models.FieldCondition(
-                key="metadata.end",
-                range=models.DatetimeRange(
-                    lt=question.date_range.to,
-                ),
-            ),
-        ]
+        from_str = validate_iso_date(question.date_range.from_)
+        logger.info(f"from: {from_str}")
+        if from_str:
+            filter_list.append(
+                models.FieldCondition(
+                    key="metadata.start",
+                    range=models.DatetimeRange(
+                        gt=from_str,
+                    )
+                )
+            )
 
-        filter_list.extend(
-            date_filters
-        )
-
-    logger.info(f"list: {filter_list}")
+        to_str = validate_iso_date(question.date_range.to)
+        logger.info(f"to: {to_str}")
+        if to_str:
+            filter_list.append(
+                models.FieldCondition(
+                    key="metadata.end",
+                    range=models.DatetimeRange(
+                        lt=to_str,
+                    ),
+                )
+            )
 
     response = await client.query_points(
         collection_name=QDRANT_COLLECTION_NAME,
@@ -459,7 +475,7 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
 
                 if len(message_ids) >= API_ANSWER_LIMIT:
                     break
-                
+
         if len(message_ids) >= API_ANSWER_LIMIT:
             break
 

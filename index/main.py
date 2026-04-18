@@ -209,12 +209,15 @@ def enrich_chunk_text(
             part1_ids.append(msg_id)
 
     # Формируем результат: две части с одними и теми же метаданными
-    result = []
+    result_merged = []
+    result_row = []
     if part1_text.strip():
-        result.append((meta_str + part1_text, part1_ids))
+        result_merged.append((meta_str + part1_text, part1_ids))
+        result_row.append((part1_text, part1_ids))
     if part2_text.strip():
-        result.append((meta_str + part2_text, part2_ids))
-    return result
+        result_merged.append((meta_str + part2_text, part2_ids))
+        result_row.append((part2_text, part2_ids))
+    return result_merged, result_row
 
 
 def build_chunks(
@@ -288,7 +291,7 @@ def build_chunks(
         # 4. Обновляем previous_chunk_text для следующей итерации.
         
         # Вызов enrich_chunk_text для chunk_body (без перекрытия)
-        enriched_parts = enrich_chunk_text(
+        enriched_chunks, row_chunks = enrich_chunk_text(
             chunk_text=chunk_body,
             chat=chat,
             messages_in_chunk=chunk_messages,
@@ -303,15 +306,20 @@ def build_chunks(
         # chunk_text += chunk_body
 
         # Для каждой обогащённой части создаём IndexAPIItem
-        for enriched_text, part_msg_ids in enriched_parts:
+        for enriched, row in zip(enriched_chunks, row_chunks):
+            enriched_text, part_msg_ids = enriched
+            row_text, _ = row
+
             # Добавляем перекрытие спереди
             if chunk_overlap:
                 final_text = chunk_overlap + "\n" + enriched_text
+                final_text_row = chunk_overlap + "\n" + row_text
             else:
                 final_text = enriched_text
+                final_text_row = row_text
             
             result.append(IndexAPIItem(
-                page_content=final_text,
+                page_content=final_text_row,
                 dense_content=final_text,
                 sparse_content=final_text,
                 message_ids=part_msg_ids,

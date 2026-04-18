@@ -174,7 +174,9 @@ def enrich_chunk_text(
 
     # Если влезает – возвращаем один чанк
     if total_len <= max_len:
-        return [(meta_str + chunk_text, [msg_id for _, _, msg_id in message_ranges])]
+        result_merged = [(meta_str + chunk_text, [msg_id for _, _, msg_id in message_ranges])]
+        result_row = [(chunk_text, [msg_id for _, _, msg_id in message_ranges])]
+        return result_merged, result_row
 
     # Иначе делим chunk_text на две части по границам сообщений
     # Находим точку раздела – половину длины текста
@@ -217,6 +219,7 @@ def enrich_chunk_text(
     if part2_text.strip():
         result_merged.append((meta_str + part2_text, part2_ids))
         result_row.append((part2_text, part2_ids))
+    
     return result_merged, result_row
 
 

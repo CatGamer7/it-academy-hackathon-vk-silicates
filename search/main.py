@@ -446,7 +446,7 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     dense_vector = await embed_dense(client, query)
 
     sparse_query = get_sparse_query(query, question)
-    sparse_vector = await embed_sparse(sparse_query)
+    sparse_vector = await embed_sparse(query)
 
     best_points = await qdrant_search(qdrant, dense_vector, sparse_vector, question)
 

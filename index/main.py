@@ -4,6 +4,7 @@ from functools import lru_cache
 from typing import Any
 import asyncio
 import hashlib
+import re
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -100,17 +101,17 @@ def render_message(message: Message) -> str:
     text = ""
 
     if message.text:
-        text += message.text
+        text += re.sub(r'\s+', ' ', message.text).strip()
 
     if message.parts:
         parts_text: list[str] = []
         for part in message.parts:
             # parts различаются по своему типу, см. README.md
             part_text = part.get("text")
-            if part.get("mediaType") == "quote":
-                part_text = "quote: [" + part_text + "]"
             if isinstance(part_text, str) and part_text:
-                parts_text.append(part_text)
+                if part.get("mediaType") == "quote":
+                    part_text = "quote: [" + re.sub(r'\s+', ' ', part_text).strip() + "]"
+                parts_text.append(re.sub(r'\s+', ' ', part_text).strip())
         if parts_text:
             text += " " + " ".join(parts_text)
 
@@ -155,7 +156,6 @@ def build_sparse_metadata(
     links = set()
     for msg in messages_in_chunk:
         if msg.file_snippets:
-            import re
             found = re.findall(r'https?://(\S+)', msg.file_snippets)
             links.update(found)
     if links:

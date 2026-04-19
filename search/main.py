@@ -173,8 +173,8 @@ app = FastAPI(title="Search Service", version="0.1.0", lifespan=lifespan)
 # Внутри шаблона dense и rerank берутся из внешних HTTP endpoint'ов,
 # которые предоставляет проверяющая система.
 # Текущий код ниже — минимальный пример search pipeline.
-DENSE_PREFETCH_K = 75
-SPARSE_PREFETCH_K = 150
+DENSE_PREFETCH_K = 60
+SPARSE_PREFETCH_K = 60
 RETRIEVE_K = 50
 API_ANSWER_LIMIT = 50
 RERANK_LIMIT = 20

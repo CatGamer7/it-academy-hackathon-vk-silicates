@@ -316,7 +316,7 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     sparse_vector = await embed_sparse(query)
     base_points = await qdrant_search(qdrant, dense_vector, sparse_vector)
 
-    if best_points is None:
+    if base_points is None:
         return SearchAPIResponse(results=[])
 
     best_points = await rerank_points(client, query, base_points)

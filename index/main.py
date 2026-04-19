@@ -89,8 +89,8 @@ app = FastAPI(title="Index Service", version="0.1.0")
 # Ваша внутренняя логика построения чанков. Можете делать всё, что посчитаете нужным.
 # Текущий код – минимальный пример
 
-CHUNK_SIZE = 1024
-OVERLAP_SIZE = 256
+CHUNK_SIZE = 2048
+OVERLAP_SIZE = 512
 SPARSE_MODEL_NAME = "Qdrant/bm25"
 FASTEMBED_CACHE_PATH = "/models/fastembed"
 

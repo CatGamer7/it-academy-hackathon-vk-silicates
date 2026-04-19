@@ -296,7 +296,7 @@ def build_chunks(
             IndexAPIItem(
                 page_content=chunk_text,
                 dense_content=dense_text,
-                sparse_content=sparse_chunk_text_meta,
+                sparse_content=chunk_text,
                 message_ids=[message_id for _, _, message_id in chunk_body_ranges],
             )
         )

@@ -144,6 +144,25 @@ class ChunkMetadata(BaseModel):
     contains_forward: bool = False
     contains_quote: bool = False
 
+def get_longer(question: Question, query_base: str) -> str:
+    ln = 0
+    max_variant = None
+    if question.variants:
+        for vari in question.variants:
+            if len(vari) > ln:
+                ln = len(vari)
+                max_variant = vari
+    if question.hyde:
+        for vari in question.hyde:
+            if len(vari) > ln:
+                ln = len(vari)
+                max_variant = vari
+    if max_variant:
+        if ln > len(query_base):
+            return max_variant
+    return query_base
+
+
 
 @lru_cache(maxsize=1)
 def get_sparse_model() -> SparseTextEmbedding:
@@ -312,8 +331,8 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     client: httpx.AsyncClient = app.state.http
     qdrant: AsyncQdrantClient = app.state.qdrant
 
-    dense_vector = await embed_dense(client, query)
-    sparse_vector = await embed_sparse(query)
+    dense_vector = await embed_dense(client, get_longer(payload.question, query))
+    sparse_vector = await embed_sparse(get_longer(payload.question, query))
     base_points = await qdrant_search(qdrant, dense_vector, sparse_vector)
 
     if base_points is None:

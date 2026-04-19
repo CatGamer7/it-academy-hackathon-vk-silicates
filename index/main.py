@@ -4,6 +4,7 @@ from functools import lru_cache
 from typing import Any
 import asyncio
 import hashlib
+import re
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -100,7 +101,7 @@ def render_message(message: Message) -> str:
     text = ""
 
     if message.text:
-        text += message.text
+        text += re.sub(r'\s+', ' ', message.text).strip()
 
     if message.parts:
         parts_text: list[str] = []
@@ -108,9 +109,9 @@ def render_message(message: Message) -> str:
             # parts различаются по своему типу, см. README.md
             part_text = part.get("text")
             if isinstance(part_text, str) and part_text:
-                parts_text.append(part_text)
+                parts_text.append(re.sub(r'\s+', ' ', part_text).strip())
         if parts_text:
-            text += "\n".join(parts_text)
+            text += " " + " ".join(parts_text)
 
     return text
 

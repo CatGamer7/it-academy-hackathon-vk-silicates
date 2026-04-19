@@ -251,7 +251,6 @@ async def qdrant_search(
         query=dense_vector,
         using=QDRANT_DENSE_VECTOR_NAME,
         limit=DENSE_PREFETCH_K,
-        query_filter=query_filter,
         with_payload=True,
         with_vectors=False,
     )
@@ -266,7 +265,6 @@ async def qdrant_search(
         ),
         using=QDRANT_SPARSE_VECTOR_NAME,
         limit=SPARSE_PREFETCH_K,
-        query_filter=query_filter,
         with_payload=True,
         with_vectors=False,
     )
@@ -305,7 +303,6 @@ async def qdrant_search(
     # Сортировка и возврат по старому интерфейсу
     sorted_points = sorted(combined.values(), key=lambda x: x[1], reverse=True)
     return [point for point, _ in sorted_points[:RETRIEVE_K]]
-
 
 
 async def get_rerank_scores(
@@ -349,6 +346,7 @@ async def get_rerank_scores(
             else:
                 raise
 
+
 def z_score_normalize(scores: list[float]) -> list[float]:
     """
     Using z-score normalization to scale the scores.
@@ -362,6 +360,7 @@ def z_score_normalize(scores: list[float]) -> list[float]:
     if std == 0:
         return scores
     return [(x - mean) / std for x in scores]
+
 
 async def rerank_points(
     client: httpx.AsyncClient,
@@ -413,37 +412,6 @@ def build_list_to_len(in_list: list[str] | None, max_len: int) -> str:
     return out_str
 
 
-def get_sparse_query(query_base: str, question: Question):
-    "Query, people, links, emails"
-    
-    entities = question.entities
-
-    if not entities:
-        return f"{query_base} {question.asker}"[:SPARSE_LEHGTH]
-
-    main_str = f"{query_base} {question.asker}"[:SPARSE_LEHGTH // 4]
-
-    part_list = [main_str]
-    if entities.people:
-        people_str = build_list_to_len(entities.people, SPARSE_LEHGTH // 4)
-        part_list.append(people_str)
-
-    if entities.links:
-        links_str = build_list_to_len(entities.links, SPARSE_LEHGTH // 4)
-        part_list.append(links_str)
-
-    # Give the rest space to emails
-    string_so_far = " ". join(part_list)
-    length_left_over = SPARSE_LEHGTH - len(string_so_far)
-
-    if entities.emails:
-        emails_str = build_list_to_len(entities.emails, length_left_over - 1)
-
-        return f"{string_so_far} {emails_str}"
-
-    return string_so_far
-
-
 def enrich_query_with_variants(query_base: str, question: Question) -> str:
     variants = question.variants or []
 
@@ -479,13 +447,9 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     client: httpx.AsyncClient = app.state.http
     qdrant: AsyncQdrantClient = app.state.qdrant
     
-    dense_vector = await embed_dense(
-        client,
-        enrich_query_with_variants(query, question)
-    )
+    dense_vector = await embed_dense(client, query)
 
-    sparse_query = get_sparse_query(query, question)
-    sparse_vector = await embed_sparse(sparse_query)
+    sparse_vector = await embed_sparse(query)
 
     best_points = await qdrant_search(qdrant, dense_vector, sparse_vector, question)
 

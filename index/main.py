@@ -5,6 +5,7 @@ from typing import Any
 import asyncio
 import hashlib
 import re
+import string
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -129,6 +130,7 @@ ENGLISH_STOP_WORDS: = {
 
 # Объединяем в один набор для быстрой проверки
 STOP_WORDS = RUSSIAN_STOP_WORDS.union(ENGLISH_STOP_WORDS)
+STOP_WORDS.update(['привет', 'здравствуйте', 'hello', 'hi'])
 
 def preprocess_for_sparse_vector(text: str,
                                   languages: tuple = ('russian', 'english'),
@@ -137,10 +139,6 @@ def preprocess_for_sparse_vector(text: str,
                                   remove_digits: bool = True) -> str:
     if not isinstance(text, str):
         return ""
-
-    # 1. Загружаем стоп-слова в виде множества для быстрого поиска
-    stop_words = RUSSIAN_STOP_WORDS.union(ENGLISH_STOP_WORDS)
-    stop_words.update(['привет', 'здравствуйте', 'hello', 'hi'])
 
     # 2. Токенизация
     tokens = text.split()
@@ -156,7 +154,7 @@ def preprocess_for_sparse_vector(text: str,
         tokens = [token for token in tokens if not token.isdigit()]
 
     # 5. Удаление стоп-слов
-    tokens = [token for token in tokens if token.lower() not in stop_words]
+    tokens = [token for token in tokens if token.lower() not in STOP_WORDS]
 
     # 6. Сборка итоговой строки с одиночными пробелами
     cleaned_text = ' '.join(tokens)

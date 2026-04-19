@@ -144,16 +144,12 @@ class ChunkMetadata(BaseModel):
     contains_forward: bool = False
     contains_quote: bool = False
 
+
 def get_longer(question: Question, query_base: str) -> str:
     ln = 0
     max_variant = None
     if question.variants:
         for vari in question.variants:
-            if len(vari) > ln:
-                ln = len(vari)
-                max_variant = vari
-    if question.hyde:
-        for vari in question.hyde:
             if len(vari) > ln:
                 ln = len(vari)
                 max_variant = vari

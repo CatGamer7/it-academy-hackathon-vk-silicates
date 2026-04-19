@@ -459,6 +459,18 @@ def enrich_query_with_variants(query_base: str, question: Question) -> str:
 
     return result if result else query_base
 
+def get_longer(question: Question, query_base: str) -> str:
+    ln = 0
+    max_variant = None
+    if question.variants:
+        for vari in question.variants:
+            if len(vari) > max_variant:
+                ln = len(vari)
+                max_variant = vari
+    if max_variant:
+        if ln > len(query_base):
+            return max_variant
+    return query_base
 
 def extract_message_ids(point: Any) -> list[str]:
     payload = point.payload or {}
@@ -478,13 +490,13 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
 
     client: httpx.AsyncClient = app.state.http
     qdrant: AsyncQdrantClient = app.state.qdrant
-    
+
     dense_vector = await embed_dense(
         client,
-        enrich_query_with_variants(query, question)
+        get_longer(question, query)
     )
 
-    sparse_query = get_sparse_query(query, question)
+    sparse_query = get_sparse_query(get_longer(question, query), question)
     sparse_vector = await embed_sparse(sparse_query)
 
     best_points = await qdrant_search(qdrant, dense_vector, sparse_vector, question)

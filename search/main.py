@@ -171,10 +171,11 @@ app = FastAPI(title="Search Service", version="0.1.0", lifespan=lifespan)
 # Внутри шаблона dense и rerank берутся из внешних HTTP endpoint'ов,
 # которые предоставляет проверяющая система.
 # Текущий код ниже — минимальный пример search pipeline.
-DENSE_PREFETCH_K = 10
-SPRASE_PREFETCH_K = 30
-RETRIEVE_K = 20
-RERANK_LIMIT = 10
+DENSE_PREFETCH_K = 60
+SPRASE_PREFETCH_K = 60
+RETRIEVE_K = 50
+RERANK_LIMIT = 20
+API_RESPONSE_LIMIT = 50
 
 async def embed_dense(client: httpx.AsyncClient, text: str) -> list[float]:
     # Dense endpoint ожидает OpenAI-compatible body с input как списком строк.
@@ -280,7 +281,7 @@ async def rerank_points(
     query: str,
     points: list[Any],
 ) -> list[Any]:
-    rerank_candidates = points[:10]
+    rerank_candidates = points[:RERANK_LIMIT]
     rerank_targets = [point.payload.get("page_content") for point in rerank_candidates]
     scores = await get_rerank_scores(client, query, rerank_targets)
 
@@ -313,16 +314,20 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
 
     dense_vector = await embed_dense(client, query)
     sparse_vector = await embed_sparse(query)
-    best_points = await qdrant_search(qdrant, dense_vector, sparse_vector)
+    base_points = await qdrant_search(qdrant, dense_vector, sparse_vector)
 
     if best_points is None:
         return SearchAPIResponse(results=[])
 
-    best_points = await rerank_points(client, query, list(best_points))
+    best_points = await rerank_points(client, query, base_points)
+
+    final_points = best_points + base_points[:RERANK_LIMIT]
 
     message_ids: list[str] = [] 
-    for point in best_points:
+    for point in final_points:
         message_ids += extract_message_ids(point)
+
+    message_ids = message_ids[:API_RESPONSE_LIMIT]
 
     return SearchAPIResponse(
         results=[SearchAPIItem(message_ids=message_ids)]

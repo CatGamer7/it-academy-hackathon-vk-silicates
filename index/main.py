@@ -97,6 +97,73 @@ FASTEMBED_CACHE_PATH = "/models/fastembed"
 # Важная переманная, которая позволяет вычислять sparse вектор в несколько ядер. Не рекомендуется изменять.
 UVICORN_WORKERS=8
 
+
+RUSSIAN_STOP_WORDS: = {
+    "и", "в", "во", "не", "что", "на", "я", "с", "со", "как", "а", "то", "все", "она", "так", "его",
+    "но", "да", "ты", "к", "у", "же", "вы", "за", "бы", "по", "только", "ее", "мне", "было", "вот",
+    "от", "меня", "еще", "нет", "о", "из", "ему", "теперь", "когда", "даже", "ну", "вдруг", "ли",
+    "если", "уже", "или", "ни", "быть", "был", "него", "до", "вас", "нибудь", "опять", "уж", "вам",
+    "ведь", "там", "потом", "себя", "ничего", "ей", "может", "они", "тут", "где", "есть", "надо",
+    "ней", "для", "мы", "тебя", "их", "чем", "была", "сам", "чтоб", "без", "будто", "чего", "раз",
+    "тоже", "себе", "под", "будет", "ж", "тогда", "кто", "этот", "того", "потому", "этого", "какой",
+    "совсем", "ним", "здесь", "этом", "один", "почти", "мой", "тем", "чтобы", "нее", "сейчас", "были",
+    "куда", "зачем", "всех", "никогда", "можно", "при", "наконец", "два", "об", "другой", "хоть",
+    "после", "над", "больше", "тот", "через", "эти", "нас", "про", "всего", "них", "какая", "много",
+    "разве", "три", "эту", "моя", "впрочем", "хорошо", "свою", "этой", "перед", "иногда", "лучше",
+    "чуть", "том", "нельзя", "такой", "ими", "него", "надо", "вон", "кроме", "сегодня", "будь"
+}
+
+ENGLISH_STOP_WORDS: = {
+    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them",
+    "my", "your", "his", "her", "its", "our", "their", "mine", "yours", "hers", "ours", "theirs",
+    "this", "that", "these", "those", "a", "an", "the", "and", "or", "but", "so", "for", "nor",
+    "yet", "of", "to", "in", "for", "on", "by", "with", "without", "about", "against", "between",
+    "into", "through", "during", "before", "after", "above", "below", "from", "up", "down", "off",
+    "over", "under", "again", "further", "then", "once", "here", "there", "all", "any", "both",
+    "each", "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only", "own",
+    "same", "so", "than", "that", "then", "these", "those", "too", "very", "just", "but", "do",
+    "does", "did", "doing", "have", "has", "had", "having", "be", "am", "are", "is", "was", "were",
+    "being", "been", "get", "gets", "got", "getting", "make", "makes", "made", "making", "can",
+    "cannot", "could", "will", "would", "should", "may", "might", "must", "shall"
+}
+
+# Объединяем в один набор для быстрой проверки
+STOP_WORDS = RUSSIAN_STOP_WORDS.union(ENGLISH_STOP_WORDS)
+
+def preprocess_for_sparse_vector(text: str,
+                                  languages: tuple = ('russian', 'english'),
+                                  lower: bool = False,
+                                  remove_punct: bool = True,
+                                  remove_digits: bool = True) -> str:
+    if not isinstance(text, str):
+        return ""
+
+    # 1. Загружаем стоп-слова в виде множества для быстрого поиска
+    stop_words = RUSSIAN_STOP_WORDS.union(ENGLISH_STOP_WORDS)
+    stop_words.update(['привет', 'здравствуйте', 'hello', 'hi'])
+
+    # 2. Токенизация
+    tokens = text.split()
+
+    # 3. Приведение к нижнему регистру (опционально, выключил)
+    if lower:
+        tokens = [token.lower() for token in tokens]
+
+    # 4. Удаление пунктуации и цифр
+    if remove_punct:
+        tokens = [token for token in tokens if token not in string.punctuation]
+    if remove_digits:
+        tokens = [token for token in tokens if not token.isdigit()]
+
+    # 5. Удаление стоп-слов
+    tokens = [token for token in tokens if token.lower() not in stop_words]
+
+    # 6. Сборка итоговой строки с одиночными пробелами
+    cleaned_text = ' '.join(tokens)
+
+    return cleaned_text
+
+
 def render_message(message: Message) -> str:
     text = ""
 
@@ -182,7 +249,7 @@ def build_chunks(
             IndexAPIItem(
                 page_content=chunk_text,
                 dense_content=chunk_text,
-                sparse_content=chunk_text,
+                sparse_content=preprocess_for_sparse_vector(chunk_text),
                 message_ids=[message_id for _, _, message_id in chunk_body_ranges],
             )
         )

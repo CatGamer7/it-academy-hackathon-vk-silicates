@@ -99,7 +99,7 @@ FASTEMBED_CACHE_PATH = "/models/fastembed"
 UVICORN_WORKERS=8
 
 
-RUSSIAN_STOP_WORDS: = {
+RUSSIAN_STOP_WORDS = {
     "и", "в", "во", "не", "что", "на", "я", "с", "со", "как", "а", "то", "все", "она", "так", "его",
     "но", "да", "ты", "к", "у", "же", "вы", "за", "бы", "по", "только", "ее", "мне", "было", "вот",
     "от", "меня", "еще", "нет", "о", "из", "ему", "теперь", "когда", "даже", "ну", "вдруг", "ли",
@@ -114,7 +114,7 @@ RUSSIAN_STOP_WORDS: = {
     "чуть", "том", "нельзя", "такой", "ими", "него", "надо", "вон", "кроме", "сегодня", "будь"
 }
 
-ENGLISH_STOP_WORDS: = {
+ENGLISH_STOP_WORDS = {
     "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them",
     "my", "your", "his", "her", "its", "our", "their", "mine", "yours", "hers", "ours", "theirs",
     "this", "that", "these", "those", "a", "an", "the", "and", "or", "but", "so", "for", "nor",

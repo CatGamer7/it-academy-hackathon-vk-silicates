@@ -3,7 +3,7 @@ import os
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Any
-import string
+import re
 
 import httpx
 from fastembed import SparseTextEmbedding
@@ -69,26 +69,17 @@ STOP_WORDS = RUSSIAN_STOP_WORDS.union(ENGLISH_STOP_WORDS)
 STOP_WORDS.update(['привет', 'здравствуйте', 'hello', 'hi'])
 
 
-def preprocess_for_sparse_vector(text: str,
-                                  languages: tuple = ('russian', 'english'),
-                                  lower: bool = False,
-                                  remove_punct: bool = True,
-                                  remove_digits: bool = True) -> str:
+def preprocess_for_sparse_vector(text: str) -> str:
     if not isinstance(text, str):
         return ""
 
     # 2. Токенизация
-    tokens = text.split()
-
-    # 3. Приведение к нижнему регистру (опционально, выключил)
-    if lower:
-        tokens = [token.lower() for token in tokens]
-
     # 4. Удаление пунктуации и цифр
-    if remove_punct:
-        tokens = [token for token in tokens if token not in string.punctuation]
-    if remove_digits:
-        tokens = [token for token in tokens if not token.isdigit()]
+    tokens = re.findall(r"[a-zа-яё]+", text, flags=re.IGNORECASE)
+
+    # # 3. Приведение к нижнему регистру (опционально, выключил)
+    # if lower:
+    #     tokens = [token.lower() for token in tokens]
 
     # 5. Удаление стоп-слов
     tokens = [token for token in tokens if token.lower() not in STOP_WORDS]

@@ -90,7 +90,7 @@ app = FastAPI(title="Index Service", version="0.1.0")
 # Текущий код – минимальный пример
 
 CHUNK_SIZE = 2048
-OVERLAP_SIZE = 256
+OVERLAP_SIZE = 512
 SPARSE_MODEL_NAME = "Qdrant/bm25"
 FASTEMBED_CACHE_PATH = "/models/fastembed"
 
@@ -241,7 +241,7 @@ async def sparse_embedding(payload: SparseEmbeddingRequest) -> dict[str, Any]:
     vectors = await asyncio.to_thread(embed_sparse_texts, payload.texts)
     return {"vectors": vectors}
 
-# красивая обработка ошибок
+# красивая обработка ошибокf
 @app.exception_handler(Exception)
 async def exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception(exc)

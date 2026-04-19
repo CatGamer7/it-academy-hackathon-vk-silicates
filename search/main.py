@@ -467,6 +467,11 @@ def get_longer(question: Question, query_base: str) -> str:
             if len(vari) > max_variant:
                 ln = len(vari)
                 max_variant = vari
+    if question.hyde:
+        for vari in question.hyde:
+            if len(vari) > max_variant:
+                ln = len(vari)
+                max_variant = vari
     if max_variant:
         if ln > len(query_base):
             return max_variant

@@ -4,6 +4,8 @@ from functools import lru_cache
 from typing import Any
 import asyncio
 import hashlib
+import re
+import string
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -88,7 +90,7 @@ app = FastAPI(title="Index Service", version="0.1.0")
 # Ваша внутренняя логика построения чанков. Можете делать всё, что посчитаете нужным.
 # Текущий код – минимальный пример
 
-CHUNK_SIZE = 512
+CHUNK_SIZE = 1024
 OVERLAP_SIZE = 256
 SPARSE_MODEL_NAME = "Qdrant/bm25"
 FASTEMBED_CACHE_PATH = "/models/fastembed"
@@ -96,11 +98,66 @@ FASTEMBED_CACHE_PATH = "/models/fastembed"
 # Важная переманная, которая позволяет вычислять sparse вектор в несколько ядер. Не рекомендуется изменять.
 UVICORN_WORKERS=8
 
+
+RUSSIAN_STOP_WORDS = {
+    "и", "в", "во", "не", "что", "на", "я", "с", "со", "как", "а", "то", "все", "она", "так", "его",
+    "но", "да", "ты", "к", "у", "же", "вы", "за", "бы", "по", "только", "ее", "мне", "было", "вот",
+    "от", "меня", "еще", "нет", "о", "из", "ему", "теперь", "когда", "даже", "ну", "вдруг", "ли",
+    "если", "уже", "или", "ни", "быть", "был", "него", "до", "вас", "нибудь", "опять", "уж", "вам",
+    "ведь", "там", "потом", "себя", "ничего", "ей", "может", "они", "тут", "где", "есть", "надо",
+    "ней", "для", "мы", "тебя", "их", "чем", "была", "сам", "чтоб", "без", "будто", "чего", "раз",
+    "тоже", "себе", "под", "будет", "ж", "тогда", "кто", "этот", "того", "потому", "этого", "какой",
+    "совсем", "ним", "здесь", "этом", "один", "почти", "мой", "тем", "чтобы", "нее", "сейчас", "были",
+    "куда", "зачем", "всех", "никогда", "можно", "при", "наконец", "два", "об", "другой", "хоть",
+    "после", "над", "больше", "тот", "через", "эти", "нас", "про", "всего", "них", "какая", "много",
+    "разве", "три", "эту", "моя", "впрочем", "хорошо", "свою", "этой", "перед", "иногда", "лучше",
+    "чуть", "том", "нельзя", "такой", "ими", "него", "надо", "вон", "кроме", "сегодня", "будь"
+}
+
+ENGLISH_STOP_WORDS = {
+    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them",
+    "my", "your", "his", "her", "its", "our", "their", "mine", "yours", "hers", "ours", "theirs",
+    "this", "that", "these", "those", "a", "an", "the", "and", "or", "but", "so", "for", "nor",
+    "yet", "of", "to", "in", "for", "on", "by", "with", "without", "about", "against", "between",
+    "into", "through", "during", "before", "after", "above", "below", "from", "up", "down", "off",
+    "over", "under", "again", "further", "then", "once", "here", "there", "all", "any", "both",
+    "each", "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only", "own",
+    "same", "so", "than", "that", "then", "these", "those", "too", "very", "just", "but", "do",
+    "does", "did", "doing", "have", "has", "had", "having", "be", "am", "are", "is", "was", "were",
+    "being", "been", "get", "gets", "got", "getting", "make", "makes", "made", "making", "can",
+    "cannot", "could", "will", "would", "should", "may", "might", "must", "shall"
+}
+
+# Объединяем в один набор для быстрой проверки
+STOP_WORDS = RUSSIAN_STOP_WORDS.union(ENGLISH_STOP_WORDS)
+STOP_WORDS.update(['привет', 'здравствуйте', 'hello', 'hi'])
+
+def preprocess_for_sparse_vector(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+
+    # 2. Токенизация
+    # 4. Удаление пунктуации и цифр
+    tokens = re.findall(r"[a-zа-яё]+", text, flags=re.IGNORECASE)
+
+    # # 3. Приведение к нижнему регистру (опционально, выключил)
+    # if lower:
+    #     tokens = [token.lower() for token in tokens]
+
+    # 5. Удаление стоп-слов
+    tokens = [token for token in tokens if token.lower() not in STOP_WORDS]
+
+    # 6. Сборка итоговой строки с одиночными пробелами
+    cleaned_text = ' '.join(tokens)
+
+    return cleaned_text
+
+
 def render_message(message: Message) -> str:
     text = ""
 
     if message.text:
-        text += message.text
+        text += re.sub(r'\s+', ' ', message.text).strip()
 
     if message.parts:
         parts_text: list[str] = []
@@ -108,9 +165,9 @@ def render_message(message: Message) -> str:
             # parts различаются по своему типу, см. README.md
             part_text = part.get("text")
             if isinstance(part_text, str) and part_text:
-                parts_text.append(part_text)
+                parts_text.append(re.sub(r'\s+', ' ', part_text).strip())
         if parts_text:
-            text += "\n".join(parts_text)
+            text += " " + " ".join(parts_text)
 
     return text
 
@@ -181,7 +238,7 @@ def build_chunks(
             IndexAPIItem(
                 page_content=chunk_text,
                 dense_content=chunk_text,
-                sparse_content=chunk_text,
+                sparse_content=preprocess_for_sparse_vector(chunk_text),
                 message_ids=[message_id for _, _, message_id in chunk_body_ranges],
             )
         )

@@ -3,6 +3,7 @@ import os
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Any
+import re
 
 import httpx
 from fastembed import SparseTextEmbedding
@@ -34,7 +35,61 @@ REQUIRED_ENV_VARS = [
     "RERANKER_URL",
     "QDRANT_URL",
 ]
- 
+
+
+RUSSIAN_STOP_WORDS = {
+    "и", "в", "во", "не", "что", "на", "я", "с", "со", "как", "а", "то", "все", "она", "так", "его",
+    "но", "да", "ты", "к", "у", "же", "вы", "за", "бы", "по", "только", "ее", "мне", "было", "вот",
+    "от", "меня", "еще", "нет", "о", "из", "ему", "теперь", "когда", "даже", "ну", "вдруг", "ли",
+    "если", "уже", "или", "ни", "быть", "был", "него", "до", "вас", "нибудь", "опять", "уж", "вам",
+    "ведь", "там", "потом", "себя", "ничего", "ей", "может", "они", "тут", "где", "есть", "надо",
+    "ней", "для", "мы", "тебя", "их", "чем", "была", "сам", "чтоб", "без", "будто", "чего", "раз",
+    "тоже", "себе", "под", "будет", "ж", "тогда", "кто", "этот", "того", "потому", "этого", "какой",
+    "совсем", "ним", "здесь", "этом", "один", "почти", "мой", "тем", "чтобы", "нее", "сейчас", "были",
+    "куда", "зачем", "всех", "никогда", "можно", "при", "наконец", "два", "об", "другой", "хоть",
+    "после", "над", "больше", "тот", "через", "эти", "нас", "про", "всего", "них", "какая", "много",
+    "разве", "три", "эту", "моя", "впрочем", "хорошо", "свою", "этой", "перед", "иногда", "лучше",
+    "чуть", "том", "нельзя", "такой", "ими", "него", "надо", "вон", "кроме", "сегодня", "будь"
+}
+
+ENGLISH_STOP_WORDS = {
+    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them",
+    "my", "your", "his", "her", "its", "our", "their", "mine", "yours", "hers", "ours", "theirs",
+    "this", "that", "these", "those", "a", "an", "the", "and", "or", "but", "so", "for", "nor",
+    "yet", "of", "to", "in", "for", "on", "by", "with", "without", "about", "against", "between",
+    "into", "through", "during", "before", "after", "above", "below", "from", "up", "down", "off",
+    "over", "under", "again", "further", "then", "once", "here", "there", "all", "any", "both",
+    "each", "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only", "own",
+    "same", "so", "than", "that", "then", "these", "those", "too", "very", "just", "but", "do",
+    "does", "did", "doing", "have", "has", "had", "having", "be", "am", "are", "is", "was", "were",
+    "being", "been", "get", "gets", "got", "getting", "make", "makes", "made", "making", "can",
+    "cannot", "could", "will", "would", "should", "may", "might", "must", "shall"
+}
+STOP_WORDS = RUSSIAN_STOP_WORDS.union(ENGLISH_STOP_WORDS)
+STOP_WORDS.update(['привет', 'здравствуйте', 'hello', 'hi'])
+
+
+def preprocess_for_sparse_vector(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+
+    # 2. Токенизация
+    # 4. Удаление пунктуации и цифр
+    tokens = re.findall(r"[a-zа-яё]+", text, flags=re.IGNORECASE)
+
+    # # 3. Приведение к нижнему регистру (опционально, выключил)
+    # if lower:
+    #     tokens = [token.lower() for token in tokens]
+
+    # 5. Удаление стоп-слов
+    tokens = [token for token in tokens if token.lower() not in STOP_WORDS]
+
+    # 6. Сборка итоговой строки с одиночными пробелами
+    cleaned_text = ' '.join(tokens)
+
+    return cleaned_text
+
+
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("search-service")
 
@@ -171,10 +226,11 @@ app = FastAPI(title="Search Service", version="0.1.0", lifespan=lifespan)
 # Внутри шаблона dense и rerank берутся из внешних HTTP endpoint'ов,
 # которые предоставляет проверяющая система.
 # Текущий код ниже — минимальный пример search pipeline.
-DENSE_PREFETCH_K = 10
-SPRASE_PREFETCH_K = 30
-RETRIEVE_K = 20
-RERANK_LIMIT = 10
+DENSE_PREFETCH_K = 60
+SPRASE_PREFETCH_K = 60
+RETRIEVE_K = 50
+RERANK_LIMIT = 20
+API_RESPONSE_LIMIT = 50
 
 async def embed_dense(client: httpx.AsyncClient, text: str) -> list[float]:
     # Dense endpoint ожидает OpenAI-compatible body с input как списком строк.
@@ -280,7 +336,7 @@ async def rerank_points(
     query: str,
     points: list[Any],
 ) -> list[Any]:
-    rerank_candidates = points[:10]
+    rerank_candidates = points[:RERANK_LIMIT]
     rerank_targets = [point.payload.get("page_content") for point in rerank_candidates]
     scores = await get_rerank_scores(client, query, rerank_targets)
 
@@ -312,17 +368,21 @@ async def search(payload: SearchAPIRequest) -> SearchAPIResponse:
     qdrant: AsyncQdrantClient = app.state.qdrant
 
     dense_vector = await embed_dense(client, query)
-    sparse_vector = await embed_sparse(query)
-    best_points = await qdrant_search(qdrant, dense_vector, sparse_vector)
+    sparse_vector = await embed_sparse(preprocess_for_sparse_vector(query))
+    base_points = await qdrant_search(qdrant, dense_vector, sparse_vector)
 
-    if best_points is None:
+    if base_points is None:
         return SearchAPIResponse(results=[])
 
-    best_points = await rerank_points(client, query, list(best_points))
+    best_points = await rerank_points(client, query, base_points)
+
+    final_points = best_points + base_points[:RERANK_LIMIT]
 
     message_ids: list[str] = [] 
-    for point in best_points:
+    for point in final_points:
         message_ids += extract_message_ids(point)
+
+    message_ids = message_ids[:API_RESPONSE_LIMIT]
 
     return SearchAPIResponse(
         results=[SearchAPIItem(message_ids=message_ids)]
